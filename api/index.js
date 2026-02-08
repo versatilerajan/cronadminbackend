@@ -6,6 +6,7 @@ const helmet = require("helmet");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 
 const app = express();
 
@@ -14,10 +15,9 @@ app.use(express.json({ limit: "10kb" }));
 app.use(cors());
 app.use(helmet());
 app.use(compression());
-
 app.use(
   rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
+    windowMs: 15 * 60 * 1000,
     max: 500
   })
 );
@@ -30,12 +30,10 @@ async function connectDB() {
   if (cached.conn) return cached.conn;
 
   if (!cached.promise) {
-    cached.promise = mongoose
-      .connect(process.env.MONGO_URI)
-      .then((mongoose) => {
-        console.log("Admin DB Connected");
-        return mongoose;
-      });
+    cached.promise = mongoose.connect(process.env.MONGO_URI).then((mongoose) => {
+      console.log("Admin DB Connected");
+      return mongoose;
+    });
   }
   cached.conn = await cached.promise;
   return cached.conn;
@@ -45,9 +43,9 @@ async function connectDB() {
 const testSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
-    date: { type: String, required: true }, // YYYY-MM-DD
-    startTime: Date, // optional if you want time-based activation
-    endTime: Date,   // optional
+    date: { type: String, required: true },
+    startTime: Date,
+    endTime: Date,
     isActive: { type: Boolean, default: false },
     totalQuestions: { type: Number, default: 0 }
   },
@@ -70,9 +68,15 @@ const questionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Models (avoid recompilation in serverless)
+const adminSchema = new mongoose.Schema({
+  email: { type: String, unique: true },
+  password: String
+});
+
+// ================= MODELS =================
 const Test = mongoose.models.Test || mongoose.model("Test", testSchema);
 const Question = mongoose.models.Question || mongoose.model("Question", questionSchema);
+const Admin = mongoose.models.Admin || mongoose.model("Admin", adminSchema);
 
 // ================= ADMIN AUTH =================
 const adminAuth = (req, res, next) => {
@@ -85,22 +89,48 @@ const adminAuth = (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.admin = decoded;
     next();
-  } catch (err) {
+  } catch {
     return res.status(401).json({ message: "Invalid token" });
   }
 };
 
+// ================= DEFAULT ADMIN CREATION =================
+async function createDefaultAdmin() {
+  await connectDB();
+  const exists = await Admin.findOne({ email: "admin@bpsc.com" });
+  if (!exists) {
+    const hashed = await bcrypt.hash("admin123", 12);
+    await Admin.create({ email: "admin@bpsc.com", password: hashed });
+    console.log("Default Admin Created");
+  }
+}
+createDefaultAdmin();
+
 // ================= ROUTES =================
 
-// Health check for Vercel
+// Health check
 app.get("/", (req, res) => {
   res.json({ status: "Admin Backend Running" });
+});
+
+// LOGIN
+app.post("/admin/login", async (req, res) => {
+  await connectDB();
+  const { email, password } = req.body;
+
+  const admin = await Admin.findOne({ email });
+  if (!admin) return res.status(400).json({ message: "Admin not found" });
+
+  const valid = await bcrypt.compare(password, admin.password);
+  if (!valid) return res.status(400).json({ message: "Wrong password" });
+
+  const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+  res.json({ token });
 });
 
 // CREATE TEST
 app.post("/admin/create-test", adminAuth, async (req, res) => {
   await connectDB();
-
   const { title, date, startTime, endTime } = req.body;
 
   const exists = await Test.findOne({ date });
@@ -113,7 +143,6 @@ app.post("/admin/create-test", adminAuth, async (req, res) => {
 // ADD QUESTION
 app.post("/admin/add-question/:testId", adminAuth, async (req, res) => {
   await connectDB();
-
   const { questionNumber, questionStatement, options, correctOption } = req.body;
 
   const question = await Question.create({
@@ -124,26 +153,21 @@ app.post("/admin/add-question/:testId", adminAuth, async (req, res) => {
     correctOption
   });
 
-  // Increment totalQuestions in Test
   await Test.findByIdAndUpdate(req.params.testId, { $inc: { totalQuestions: 1 } });
-
   res.json(question);
 });
 
-// DELETE TEST (and its questions)
+// DELETE TEST (and all questions)
 app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
   await connectDB();
-
   await Question.deleteMany({ testId: req.params.testId });
   await Test.findByIdAndDelete(req.params.testId);
-
   res.json({ message: "Test deleted successfully" });
 });
 
 // DELETE SINGLE QUESTION
 app.delete("/admin/delete-question/:questionId", adminAuth, async (req, res) => {
   await connectDB();
-
   await Question.findByIdAndDelete(req.params.questionId);
   res.json({ message: "Question deleted successfully" });
 });
@@ -151,7 +175,6 @@ app.delete("/admin/delete-question/:questionId", adminAuth, async (req, res) => 
 // GET ALL TESTS
 app.get("/admin/tests", adminAuth, async (req, res) => {
   await connectDB();
-
   const tests = await Test.find().sort({ date: -1 });
   res.json(tests);
 });
@@ -159,7 +182,6 @@ app.get("/admin/tests", adminAuth, async (req, res) => {
 // GET QUESTIONS OF A TEST
 app.get("/admin/questions/:testId", adminAuth, async (req, res) => {
   await connectDB();
-
   const questions = await Question.find({ testId: req.params.testId }).sort({ questionNumber: 1 });
   res.json(questions);
 });
