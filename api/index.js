@@ -130,15 +130,33 @@ app.post("/admin/login", async (req, res) => {
 
 // CREATE TEST
 app.post("/admin/create-test", adminAuth, async (req, res) => {
-  await connectDB();
-  const { title, date, startTime, endTime } = req.body;
+  try {
+    await connectDB();
 
-  const exists = await Test.findOne({ date });
-  if (exists) return res.status(400).json({ message: "Test already exists for this date" });
+    const { title, date, startTime, endTime } = req.body;
 
-  const test = await Test.create({ title, date, startTime, endTime });
-  res.json(test);
+    if (!title || !date) {
+      return res.status(400).json({ message: "Title and date are required" });
+    }
+
+    // optional: validate date format
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: "Date must be in YYYY-MM-DD format" });
+    }
+
+    const exists = await Test.findOne({ date });
+    if (exists)
+      return res.status(400).json({ message: "Test already exists for this date" });
+
+    const test = await Test.create({ title, date, startTime, endTime });
+
+    res.json(test);
+  } catch (err) {
+    console.error("Create Test Error:", err);
+    res.status(500).json({ message: "Server Error", error: err.message });
+  }
 });
+
 
 // ADD QUESTION
 app.post("/admin/add-question/:testId", adminAuth, async (req, res) => {
