@@ -1,4 +1,3 @@
-// api/index.js
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
@@ -24,9 +23,10 @@ app.use(
 );
 app.use(express.json({ limit: "100kb" }));
 
+// CORS – allow all origins for now (tighten later if needed)
 app.use(
   cors({
-    origin: true, // allow all for now – tighten later
+    origin: true,
     methods: ["GET", "POST", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
@@ -34,26 +34,26 @@ app.use(
   })
 );
 
-app.options("*", cors());
+// FIX: Use regex wildcard instead of bare "*" (Express 5 requirement)
+app.options(/.*/, cors());
 
-// ─── Helper: Connect to MongoDB (called per request) ───────────
+// ─── DB connect helper ─────────────────────────────────────────
 async function connectDB() {
-  if (mongoose.connection.readyState >= 1) return; // already connected
+  if (mongoose.connection.readyState >= 1) return;
 
   try {
     await mongoose.connect(process.env.MONGO_URI, {
       serverSelectionTimeoutMS: 15000,
       connectTimeoutMS: 15000,
-      maxPoolSize: 10,
     });
     console.log("MongoDB connected");
   } catch (err) {
-    console.error("MongoDB connection failed:", err.message);
-    throw err; // let route handle the error
+    console.error("MongoDB connect failed:", err.message);
+    throw err;
   }
 }
 
-// ─── Schemas (same as before) ──────────────────────────────────
+// ─── Schemas ───────────────────────────────────────────────────
 const testSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 200 },
@@ -99,14 +99,14 @@ const Admin = mongoose.models.Admin || mongoose.model("Admin", adminSchema);
 const adminAuth = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
-    return res.status(401).json({ success: false, message: "No token" });
+    return res.status(401).json({ success: false, message: "No token provided" });
   }
   const token = authHeader.split(" ")[1];
   try {
     req.admin = jwt.verify(token, process.env.JWT_SECRET);
     next();
   } catch (err) {
-    res.status(401).json({ success: false, message: "Invalid token" });
+    return res.status(401).json({ success: false, message: "Invalid/expired token" });
   }
 };
 
@@ -114,9 +114,9 @@ const adminAuth = (req, res, next) => {
 app.get("/", async (req, res) => {
   try {
     await connectDB();
-    res.json({ success: true, message: "Admin backend running", dbState: mongoose.connection.readyState });
+    res.json({ success: true, message: "Backend running", dbReady: true });
   } catch (err) {
-    res.status(500).json({ success: false, message: "Server error", error: err.message });
+    res.status(500).json({ success: false, message: "Server error", detail: err.message });
   }
 });
 
@@ -126,10 +126,11 @@ app.post("/admin/login", async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: "Email & password required" });
 
-    const admin = await Admin.findOne({ email: email.toLowerCase() });
-    if (!admin || !(await bcrypt.compare(password, admin.password))) {
-      return res.status(401).json({ success: false, message: "Invalid credentials" });
-    }
+    const admin = await Admin.findOne({ email: email.toLowerCase().trim() });
+    if (!admin) return res.status(401).json({ success: false, message: "Admin not found" });
+
+    const match = await bcrypt.compare(password, admin.password);
+    if (!match) return res.status(401).json({ success: false, message: "Wrong password" });
 
     const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, { expiresIn: "24h" });
     res.json({ success: true, token });
@@ -142,19 +143,18 @@ app.post("/admin/login", async (req, res) => {
 app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
-
     const { title, date, startTime, endTime, questions } = req.body;
 
-    if (!title || !date || !Array.isArray(questions) || questions.length !== 50) {
-      return res.status(400).json({ success: false, message: "Invalid input: need title, date & exactly 50 questions" });
+    if (!title?.trim() || !date || !Array.isArray(questions) || questions.length !== 50) {
+      return res.status(400).json({ success: false, message: "Need title, date & exactly 50 questions" });
     }
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ success: false, message: "Date format must be YYYY-MM-DD" });
+      return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
     }
 
-    const exists = await Test.findOne({ date });
-    if (exists) return res.status(409).json({ success: false, message: "Test already exists for this date" });
+    const existing = await Test.findOne({ date });
+    if (existing) return res.status(409).json({ success: false, message: "Test exists for this date" });
 
     const test = await Test.create({
       title: title.trim(),
@@ -164,25 +164,25 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       totalQuestions: 50,
     });
 
-    const questionDocs = questions.map((q, i) => ({
+    const qDocs = questions.map((q, idx) => ({
       testId: test._id,
-      questionNumber: q.questionNumber || i + 1,
-      questionStatement: q.questionStatement?.trim() || "",
+      questionNumber: q.questionNumber || idx + 1,
+      questionStatement: String(q.questionStatement || "").trim(),
       options: {
-        option1: q.options?.option1?.trim() || "",
-        option2: q.options?.option2?.trim() || "",
-        option3: q.options?.option3?.trim() || "",
-        option4: q.options?.option4?.trim() || "",
+        option1: String(q.options?.option1 || "").trim(),
+        option2: String(q.options?.option2 || "").trim(),
+        option3: String(q.options?.option3 || "").trim(),
+        option4: String(q.options?.option4 || "").trim(),
       },
       correctOption: q.correctOption,
     }));
 
-    await Question.insertMany(questionDocs);
+    await Question.insertMany(qDocs);
 
-    res.json({ success: true, message: "Test created with 50 questions", testId: test._id });
+    res.json({ success: true, message: "Test + questions created", testId: test._id.toString() });
   } catch (err) {
     console.error("Create test error:", err.message);
-    res.status(500).json({ success: false, message: err.message || "Failed to create test" });
+    res.status(500).json({ success: false, message: err.message || "Creation failed" });
   }
 });
 
@@ -200,12 +200,12 @@ app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
   try {
     await connectDB();
     await Question.deleteMany({ testId: req.params.testId });
-    await Test.findByIdAndDelete(req.params.testId);
-    res.json({ success: true, message: "Deleted" });
+    const result = await Test.findByIdAndDelete(req.params.testId);
+    if (!result) return res.status(404).json({ success: false, message: "Test not found" });
+    res.json({ success: true, message: "Test deleted" });
   } catch (err) {
     res.status(500).json({ success: false, message: "Delete failed" });
   }
 });
 
-// Export for Vercel
 module.exports = app;
