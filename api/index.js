@@ -142,34 +142,37 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
 
-    const { title, date, startTime, endTime, questions } = req.body;
+    let { title, date, startTime, endTime, questions } = req.body;
 
     if (!title?.trim() || !date || !Array.isArray(questions) || questions.length !== 50) {
       return res.status(400).json({ success: false, message: "Need title, date & exactly 50 questions" });
     }
 
+    // Force correct YYYY-MM-DD format (prevents timezone shifting the date)
+    if (date.includes("T")) {
+      date = date.split("T")[0]; // strip time if any
+    }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
     }
 
-    // Force validate date is valid YYYY-MM-DD
-    const dateObj = new Date(date + "T00:00:00+05:30"); // Treat as IST midnight
+    // Validate it's a real date
+    const dateObj = new Date(date + "T00:00:00+05:30"); // treat as IST midnight
     if (isNaN(dateObj.getTime())) {
-      return res.status(400).json({ success: false, message: "Invalid date format" });
+      return res.status(400).json({ success: false, message: "Invalid date" });
     }
 
     const existing = await Test.findOne({ date });
     if (existing) return res.status(409).json({ success: false, message: "Test already exists for this date" });
 
-    // Convert incoming start/end times (assumed sent as IST) to UTC for storage
+    // Convert start/end to UTC for storage
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-
     const startTimeUTC = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : undefined;
     const endTimeUTC   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS) : undefined;
 
     const test = await Test.create({
       title: title.trim(),
-      date,  // Keep as string "YYYY-MM-DD" — this is the key field
+      date,  // exact string "2026-02-10"
       startTime: startTimeUTC,
       endTime: endTimeUTC,
       totalQuestions: 50,
@@ -194,13 +197,14 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       success: true,
       message: "Test + questions created",
       testId: test._id.toString(),
-      savedDate: date, // for confirmation
+      savedDate: date, // for debug
     });
   } catch (err) {
-    console.error("Create test error:", err.message);
+    console.error("Create test error:", err.message, err.stack);
     res.status(500).json({ success: false, message: err.message || "Creation failed" });
   }
 });
+
 app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
     await connectDB();
