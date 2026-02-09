@@ -152,18 +152,24 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
     }
 
+    // Force validate date is valid YYYY-MM-DD
+    const dateObj = new Date(date + "T00:00:00+05:30"); // Treat as IST midnight
+    if (isNaN(dateObj.getTime())) {
+      return res.status(400).json({ success: false, message: "Invalid date format" });
+    }
+
     const existing = await Test.findOne({ date });
     if (existing) return res.status(409).json({ success: false, message: "Test already exists for this date" });
 
-    // ─── IMPORTANT: Convert incoming IST times to UTC before saving ───
-    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC + 5:30
+    // Convert incoming start/end times (assumed sent as IST) to UTC for storage
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
     const startTimeUTC = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : undefined;
     const endTimeUTC   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS) : undefined;
 
     const test = await Test.create({
       title: title.trim(),
-      date,
+      date,  // Keep as string "YYYY-MM-DD" — this is the key field
       startTime: startTimeUTC,
       endTime: endTimeUTC,
       totalQuestions: 50,
@@ -188,16 +194,13 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       success: true,
       message: "Test + questions created",
       testId: test._id.toString(),
-      // Return times in IST for admin confirmation
-      startTimeIST: startTimeUTC ? new Date(startTimeUTC.getTime() + IST_OFFSET_MS).toISOString() : null,
-      endTimeIST: endTimeUTC ? new Date(endTimeUTC.getTime() + IST_OFFSET_MS).toISOString() : null,
+      savedDate: date, // for confirmation
     });
   } catch (err) {
     console.error("Create test error:", err.message);
     res.status(500).json({ success: false, message: err.message || "Creation failed" });
   }
 });
-
 app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
     await connectDB();
