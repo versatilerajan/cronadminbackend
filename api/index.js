@@ -9,13 +9,11 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
 const app = express();
-
-// Middleware
 app.use(helmet());
 app.use(compression());
 app.use(
   rateLimit({
-    windowMs: 15 * 60 * 1000,
+    windowMs: 15 * 60 * 1000, // 15 minutes
     max: 400,
     standardHeaders: true,
     legacyHeaders: false,
@@ -23,7 +21,7 @@ app.use(
 );
 app.use(express.json({ limit: "100kb" }));
 
-// CORS – allow all origins for now (tighten later if needed)
+// CORS – safe for production (you can tighten origin later)
 app.use(
   cors({
     origin: true,
@@ -34,10 +32,10 @@ app.use(
   })
 );
 
-// FIX: Use regex wildcard instead of bare "*" (Express 5 requirement)
+// Safe wildcard for OPTIONS (prevents path-to-regexp crash)
 app.options(/.*/, cors());
 
-// ─── DB connect helper ─────────────────────────────────────────
+// ================= DB CONNECT HELPER =================
 async function connectDB() {
   if (mongoose.connection.readyState >= 1) return;
 
@@ -53,7 +51,7 @@ async function connectDB() {
   }
 }
 
-// ─── Schemas ───────────────────────────────────────────────────
+// ================= SCHEMAS =================
 const testSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 200 },
@@ -95,7 +93,7 @@ const Test = mongoose.models.Test || mongoose.model("Test", testSchema);
 const Question = mongoose.models.Question || mongoose.model("Question", questionSchema);
 const Admin = mongoose.models.Admin || mongoose.model("Admin", adminSchema);
 
-// ─── Auth middleware ───────────────────────────────────────────
+// ================= ADMIN AUTH MIDDLEWARE =================
 const adminAuth = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
@@ -110,11 +108,11 @@ const adminAuth = (req, res, next) => {
   }
 };
 
-// ─── Routes ────────────────────────────────────────────────────
+// ================= ROUTES =================
 app.get("/", async (req, res) => {
   try {
     await connectDB();
-    res.json({ success: true, message: "Backend running", dbReady: true });
+    res.json({ success: true, message: "Admin Backend Running", dbReady: true });
   } catch (err) {
     res.status(500).json({ success: false, message: "Server error", detail: err.message });
   }
@@ -143,6 +141,7 @@ app.post("/admin/login", async (req, res) => {
 app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
+
     const { title, date, startTime, endTime, questions } = req.body;
 
     if (!title?.trim() || !date || !Array.isArray(questions) || questions.length !== 50) {
@@ -154,13 +153,19 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     }
 
     const existing = await Test.findOne({ date });
-    if (existing) return res.status(409).json({ success: false, message: "Test exists for this date" });
+    if (existing) return res.status(409).json({ success: false, message: "Test already exists for this date" });
+
+    // ─── IMPORTANT: Convert incoming IST times to UTC before saving ───
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // IST = UTC + 5:30
+
+    const startTimeUTC = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : undefined;
+    const endTimeUTC   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS) : undefined;
 
     const test = await Test.create({
       title: title.trim(),
       date,
-      startTime: startTime ? new Date(startTime) : undefined,
-      endTime: endTime ? new Date(endTime) : undefined,
+      startTime: startTimeUTC,
+      endTime: endTimeUTC,
       totalQuestions: 50,
     });
 
@@ -179,7 +184,14 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     await Question.insertMany(qDocs);
 
-    res.json({ success: true, message: "Test + questions created", testId: test._id.toString() });
+    res.json({
+      success: true,
+      message: "Test + questions created",
+      testId: test._id.toString(),
+      // Return times in IST for admin confirmation
+      startTimeIST: startTimeUTC ? new Date(startTimeUTC.getTime() + IST_OFFSET_MS).toISOString() : null,
+      endTimeIST: endTimeUTC ? new Date(endTimeUTC.getTime() + IST_OFFSET_MS).toISOString() : null,
+    });
   } catch (err) {
     console.error("Create test error:", err.message);
     res.status(500).json({ success: false, message: err.message || "Creation failed" });
@@ -190,7 +202,16 @@ app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
     await connectDB();
     const tests = await Test.find().sort({ date: -1 }).lean();
-    res.json({ success: true, tests });
+
+    // Optional: Convert times back to IST for display in admin panel
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const testsWithIST = tests.map(test => ({
+      ...test,
+      startTimeIST: test.startTime ? new Date(test.startTime.getTime() + IST_OFFSET_MS).toISOString() : null,
+      endTimeIST: test.endTime ? new Date(test.endTime.getTime() + IST_OFFSET_MS).toISOString() : null,
+    }));
+
+    res.json({ success: true, tests: testsWithIST });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load tests" });
   }
@@ -207,5 +228,4 @@ app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
     res.status(500).json({ success: false, message: "Delete failed" });
   }
 });
-
 module.exports = app;
