@@ -9,80 +9,57 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 
 const app = express();
+
 app.use(helmet());
 app.use(compression());
-app.use(
-  rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 400,
-    standardHeaders: true,
-    legacyHeaders: false,
-  })
-);
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 400 }));
 app.use(express.json({ limit: "100kb" }));
 
-// CORS – safe for production (you can tighten origin later)
-app.use(
-  cors({
-    origin: true,
-    methods: ["GET", "POST", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-    optionsSuccessStatus: 204,
-  })
-);
-
-// Safe wildcard for OPTIONS (prevents path-to-regexp crash)
+app.use(cors({
+  origin: true,
+  methods: ["GET", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+  optionsSuccessStatus: 204,
+}));
 app.options(/.*/, cors());
 
-// ================= DB CONNECT HELPER =================
+// ================= DB CONNECT =================
 async function connectDB() {
   if (mongoose.connection.readyState >= 1) return;
-
-  try {
-    await mongoose.connect(process.env.MONGO_URI, {
-      serverSelectionTimeoutMS: 15000,
-      connectTimeoutMS: 15000,
-    });
-    console.log("MongoDB connected");
-  } catch (err) {
-    console.error("MongoDB connect failed:", err.message);
-    throw err;
-  }
+  await mongoose.connect(process.env.MONGO_URI, {
+    serverSelectionTimeoutMS: 15000,
+    connectTimeoutMS: 15000,
+  });
+  console.log("MongoDB connected");
 }
 
 // ================= SCHEMAS =================
-const testSchema = new mongoose.Schema(
-  {
-    title: { type: String, required: true, trim: true, maxlength: 200 },
-    date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
-    startTime: Date,
-    endTime: Date,
-    isActive: { type: Boolean, default: false },
-    totalQuestions: { type: Number, default: 0 },
-  },
-  { timestamps: true }
-);
+const testSchema = new mongoose.Schema({
+  title: { type: String, required: true, trim: true, maxlength: 200 },
+  date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+  startTime: Date,
+  endTime: Date,
+  isActive: { type: Boolean, default: false },
+  totalQuestions: { type: Number, default: 0 },
+}, { timestamps: true });
 
-const questionSchema = new mongoose.Schema(
-  {
-    testId: { type: mongoose.Schema.Types.ObjectId, ref: "Test", required: true },
-    questionNumber: { type: Number, required: true, min: 1 },
-    questionStatement: { type: String, required: true, trim: true },
-    options: {
-      option1: { type: String, required: true, trim: true },
-      option2: { type: String, required: true, trim: true },
-      option3: { type: String, required: true, trim: true },
-      option4: { type: String, required: true, trim: true },
-    },
-    correctOption: {
-      type: String,
-      enum: ["option1", "option2", "option3", "option4"],
-      required: true,
-    },
+const questionSchema = new mongoose.Schema({
+  testId: { type: mongoose.Schema.Types.ObjectId, ref: "Test", required: true },
+  questionNumber: { type: Number, required: true, min: 1 },
+  questionStatement: { type: String, required: true, trim: true },
+  options: {
+    option1: { type: String, required: true, trim: true },
+    option2: { type: String, required: true, trim: true },
+    option3: { type: String, required: true, trim: true },
+    option4: { type: String, required: true, trim: true },
   },
-  { timestamps: true }
-);
+  correctOption: {
+    type: String,
+    enum: ["option1", "option2", "option3", "option4"],
+    required: true,
+  },
+}, { timestamps: true });
 
 const adminSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -93,15 +70,14 @@ const Test = mongoose.models.Test || mongoose.model("Test", testSchema);
 const Question = mongoose.models.Question || mongoose.model("Question", questionSchema);
 const Admin = mongoose.models.Admin || mongoose.model("Admin", adminSchema);
 
-// ================= ADMIN AUTH MIDDLEWARE =================
+// ================= ADMIN AUTH =================
 const adminAuth = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
-    return res.status(401).json({ success: false, message: "No token provided" });
+    return res.status(401).json({ success: false, message: "No token" });
   }
-  const token = authHeader.split(" ")[1];
   try {
-    req.admin = jwt.verify(token, process.env.JWT_SECRET);
+    req.admin = jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET);
     next();
   } catch (err) {
     return res.status(401).json({ success: false, message: "Invalid/expired token" });
@@ -112,9 +88,9 @@ const adminAuth = (req, res, next) => {
 app.get("/", async (req, res) => {
   try {
     await connectDB();
-    res.json({ success: true, message: "Admin Backend Running", dbReady: true });
+    res.json({ success: true, message: "Admin Backend Running" });
   } catch (err) {
-    res.status(500).json({ success: false, message: "Server error", detail: err.message });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
@@ -127,13 +103,13 @@ app.post("/admin/login", async (req, res) => {
     const admin = await Admin.findOne({ email: email.toLowerCase().trim() });
     if (!admin) return res.status(401).json({ success: false, message: "Admin not found" });
 
-    const match = await bcrypt.compare(password, admin.password);
-    if (!match) return res.status(401).json({ success: false, message: "Wrong password" });
+    if (!await bcrypt.compare(password, admin.password)) {
+      return res.status(401).json({ success: false, message: "Wrong password" });
+    }
 
     const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, { expiresIn: "24h" });
     res.json({ success: true, token });
   } catch (err) {
-    console.error("Login error:", err.message);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
@@ -142,40 +118,46 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
 
-    let { title, date, startTime, endTime, questions } = req.body;
+    let { title, date, startTime, endTime, questions, totalQuestions } = req.body;
 
-    if (!title?.trim() || !date || !Array.isArray(questions) || questions.length !== 50) {
-      return res.status(400).json({ success: false, message: "Need title, date & exactly 50 questions" });
+    // Allow 50 or 150 — you can tighten later if needed
+    if (!title?.trim() || !date || !Array.isArray(questions)) {
+      return res.status(400).json({ success: false, message: "title, date and questions array required" });
     }
 
-    // Force correct YYYY-MM-DD format (prevents timezone shifting the date)
-    if (date.includes("T")) {
-      date = date.split("T")[0]; // strip time if any
+    const allowedCounts = [50, 150];
+    const numQuestions = questions.length;
+    if (!allowedCounts.includes(numQuestions)) {
+      return res.status(400).json({ success: false, message: "Allowed question counts: 50 or 150" });
     }
+
+    // Clean date
+    if (date.includes("T")) date = date.split("T")[0];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
     }
 
-    // Validate it's a real date
-    const dateObj = new Date(date + "T00:00:00+05:30"); // treat as IST midnight
+    const dateObj = new Date(date + "T00:00:00+05:30");
     if (isNaN(dateObj.getTime())) {
       return res.status(400).json({ success: false, message: "Invalid date" });
     }
 
-    const existing = await Test.findOne({ date });
-    if (existing) return res.status(409).json({ success: false, message: "Test already exists for this date" });
+    if (await Test.findOne({ date })) {
+      return res.status(409).json({ success: false, message: "Test already exists for this date" });
+    }
 
-    // Convert start/end to UTC for storage
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const startTimeUTC = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : undefined;
-    const endTimeUTC   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS) : undefined;
+
+    // Default: midnight → midnight + 23:59:59
+    const start = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : new Date(dateObj.getTime());
+    const end   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS)   : new Date(dateObj.getTime() + 24*60*60*1000 - 1000);
 
     const test = await Test.create({
       title: title.trim(),
-      date,  // exact string "2026-02-10"
-      startTime: startTimeUTC,
-      endTime: endTimeUTC,
-      totalQuestions: 50,
+      date,
+      startTime: start,
+      endTime: end,
+      totalQuestions: numQuestions,
     });
 
     const qDocs = questions.map((q, idx) => ({
@@ -195,9 +177,10 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: "Test + questions created",
+      message: `Test created with ${numQuestions} questions`,
       testId: test._id.toString(),
-      savedDate: date, // for debug
+      date,
+      totalQuestions: numQuestions
     });
   } catch (err) {
     console.error("Create test error:", err.message, err.stack);
@@ -210,12 +193,11 @@ app.get("/admin/tests", adminAuth, async (req, res) => {
     await connectDB();
     const tests = await Test.find().sort({ date: -1 }).lean();
 
-    // Optional: Convert times back to IST for display in admin panel
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const testsWithIST = tests.map(test => ({
-      ...test,
-      startTimeIST: test.startTime ? new Date(test.startTime.getTime() + IST_OFFSET_MS).toISOString() : null,
-      endTimeIST: test.endTime ? new Date(test.endTime.getTime() + IST_OFFSET_MS).toISOString() : null,
+    const testsWithIST = tests.map(t => ({
+      ...t,
+      startTimeIST: t.startTime ? new Date(t.startTime.getTime() + IST_OFFSET_MS).toISOString() : null,
+      endTimeIST:   t.endTime   ? new Date(t.endTime.getTime()   + IST_OFFSET_MS).toISOString() : null,
     }));
 
     res.json({ success: true, tests: testsWithIST });
@@ -230,9 +212,10 @@ app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
     await Question.deleteMany({ testId: req.params.testId });
     const result = await Test.findByIdAndDelete(req.params.testId);
     if (!result) return res.status(404).json({ success: false, message: "Test not found" });
-    res.json({ success: true, message: "Test deleted" });
+    res.json({ success: true, message: "Test & questions deleted" });
   } catch (err) {
     res.status(500).json({ success: false, message: "Delete failed" });
   }
 });
+
 module.exports = app;
