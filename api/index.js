@@ -151,8 +151,13 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid date" });
     }
 
-    if (await Test.findOne({ date })) {
-      return res.status(409).json({ success: false, message: "Test already exists for this date" });
+    // ← FIXED: only block if same date + same testType
+    const existing = await Test.findOne({ date, testType });
+    if (existing) {
+      return res.status(409).json({ 
+        success: false, 
+        message: `A ${testType} test already exists for date ${date}` 
+      });
     }
 
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -166,7 +171,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       startTime: start,
       endTime: end,
       totalQuestions: numQuestions,
-      testType,   // ← saved as "paid" or "free"
+      testType,
     });
 
     const qDocs = questions.map((q, idx) => ({
@@ -186,7 +191,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Test created successfully (${numQuestions} questions) – Type: ${testType.toUpperCase()}`,
+      message: `${testType.toUpperCase()} test created successfully (${numQuestions} questions)`,
       testId: test._id.toString(),
       date,
       totalQuestions: numQuestions,
