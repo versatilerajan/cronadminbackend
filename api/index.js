@@ -40,8 +40,12 @@ const testSchema = new mongoose.Schema({
   date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
   startTime: Date,
   endTime: Date,
-  isActive: { type: Boolean, default: false },
   totalQuestions: { type: Number, default: 0 },
+  testType: { 
+    type: String, 
+    enum: ["paid", "free"], 
+    required: true 
+  },   // ← NEW FIELD: paid or free
 }, { timestamps: true });
 
 const questionSchema = new mongoose.Schema({
@@ -114,24 +118,29 @@ app.post("/admin/login", async (req, res) => {
   }
 });
 
+// Create test – now with testType selector (paid or free)
 app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
 
-    let { title, date, startTime, endTime, questions, totalQuestions } = req.body;
+    let { title, date, startTime, endTime, questions, testType } = req.body;
 
-    // Allow 50 or 150 — you can tighten later if needed
-    if (!title?.trim() || !date || !Array.isArray(questions)) {
-      return res.status(400).json({ success: false, message: "title, date and questions array required" });
+    if (!title?.trim() || !date || !Array.isArray(questions) || !["paid", "free"].includes(testType)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "title, date, questions array, and testType ('paid' or 'free') are required" 
+      });
     }
 
-    const allowedCounts = [50, 150];
     const numQuestions = questions.length;
+    const allowedCounts = [50, 150];
     if (!allowedCounts.includes(numQuestions)) {
-      return res.status(400).json({ success: false, message: "Allowed question counts: 50 or 150" });
+      return res.status(400).json({
+        success: false,
+        message: "Allowed question counts: 50 or 150 only"
+      });
     }
 
-    // Clean date
     if (date.includes("T")) date = date.split("T")[0];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
@@ -148,7 +157,6 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-    // Default: midnight → midnight + 23:59:59
     const start = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : new Date(dateObj.getTime());
     const end   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS)   : new Date(dateObj.getTime() + 24*60*60*1000 - 1000);
 
@@ -158,6 +166,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       startTime: start,
       endTime: end,
       totalQuestions: numQuestions,
+      testType,   // ← saved as "paid" or "free"
     });
 
     const qDocs = questions.map((q, idx) => ({
@@ -177,10 +186,11 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Test created with ${numQuestions} questions`,
+      message: `Test created successfully (${numQuestions} questions) – Type: ${testType.toUpperCase()}`,
       testId: test._id.toString(),
       date,
-      totalQuestions: numQuestions
+      totalQuestions: numQuestions,
+      testType
     });
   } catch (err) {
     console.error("Create test error:", err.message, err.stack);
