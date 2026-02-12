@@ -69,7 +69,7 @@ const adminSchema = new mongoose.Schema({
   password: { type: String, required: true },
 });
 
-const Test  = mongoose.models.Test  || mongoose.model("Test", testSchema);
+const Test = mongoose.models.Test || mongoose.model("Test", testSchema);
 const Question = mongoose.models.Question || mongoose.model("Question", questionSchema);
 const Admin = mongoose.models.Admin || mongoose.model("Admin", adminSchema);
 
@@ -120,37 +120,40 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     let { title, date, startTime, endTime, questions, testType } = req.body;
 
     if (!title?.trim() || !date || !Array.isArray(questions) || !["paid", "free"].includes(testType)) {
-      return res.status(400).json({ success: false, message: "title, date, questions array, testType required" });
+      return res.status(400).json({ success: false, message: "title, date, questions array, and testType ('paid' or 'free') are required" });
     }
 
     const numQuestions = questions.length;
     if (![50, 150].includes(numQuestions)) {
-      return res.status(400).json({ success: false, message: "Only 50 or 150 questions allowed" });
+      return res.status(400).json({ success: false, message: "Allowed question counts: 50 or 150 only" });
     }
 
     if (date.includes("T")) date = date.split("T")[0];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ success: false, message: "Date format must be YYYY-MM-DD" });
+      return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
+    }
+
+    const dateObj = new Date(date + "T00:00:00+05:30");
+    if (isNaN(dateObj.getTime())) {
+      return res.status(400).json({ success: false, message: "Invalid date" });
     }
 
     const existing = await Test.findOne({ date, testType });
     if (existing) {
       return res.status(409).json({
         success: false,
-        message: `A ${testType} test already exists for ${date}`
+        message: `A ${testType} test already exists for date ${date}`
       });
     }
 
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const base = new Date(date + "T00:00:00+05:30");
-
     const start = startTime
       ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS)
-      : new Date(base.getTime());
+      : new Date(dateObj.getTime());
 
     const end = endTime
       ? new Date(new Date(endTime).getTime() - IST_OFFSET_MS)
-      : new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1000); // 23:59:59 same day
+      : new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1000);
 
     const test = await Test.create({
       title: title.trim(),
@@ -176,16 +179,21 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     await Question.insertMany(qDocs);
 
+    // Safe upper case with fallback
+    const typeDisplay = testType ? testType.toUpperCase() : "TEST";
+
     res.json({
       success: true,
-      message: `${testType.toUpperCase()} test created (${numQuestions} questions)`,
+      message: `${typeDisplay} test created successfully (${numQuestions} questions)`,
       testId: test._id.toString(),
       date,
+      totalQuestions: numQuestions,
+      testType,
       startTimeIST: new Date(start.getTime() + IST_OFFSET_MS).toISOString(),
       endTimeIST: new Date(end.getTime() + IST_OFFSET_MS).toISOString(),
     });
   } catch (err) {
-    console.error("create-test error:", err.message, err.stack);
+    console.error("Create test error:", err.message, err.stack);
     res.status(500).json({ success: false, message: err.message || "Creation failed" });
   }
 });
