@@ -14,7 +14,6 @@ app.use(helmet());
 app.use(compression());
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 400 }));
 app.use(express.json({ limit: "100kb" }));
-
 app.use(cors({
   origin: true,
   methods: ["GET", "POST", "DELETE", "OPTIONS"],
@@ -41,11 +40,11 @@ const testSchema = new mongoose.Schema({
   startTime: Date,
   endTime: Date,
   totalQuestions: { type: Number, default: 0 },
-  testType: { 
-    type: String, 
-    enum: ["paid", "free"], 
-    required: true 
-  },   // ← NEW FIELD: paid or free
+  testType: {
+    type: String,
+    enum: ["paid", "free"],
+    required: true
+  },
 }, { timestamps: true });
 
 const questionSchema = new mongoose.Schema({
@@ -70,7 +69,7 @@ const adminSchema = new mongoose.Schema({
   password: { type: String, required: true },
 });
 
-const Test = mongoose.models.Test || mongoose.model("Test", testSchema);
+const Test  = mongoose.models.Test  || mongoose.model("Test", testSchema);
 const Question = mongoose.models.Question || mongoose.model("Question", questionSchema);
 const Admin = mongoose.models.Admin || mongoose.model("Admin", adminSchema);
 
@@ -103,14 +102,11 @@ app.post("/admin/login", async (req, res) => {
     await connectDB();
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: "Email & password required" });
-
     const admin = await Admin.findOne({ email: email.toLowerCase().trim() });
     if (!admin) return res.status(401).json({ success: false, message: "Admin not found" });
-
     if (!await bcrypt.compare(password, admin.password)) {
       return res.status(401).json({ success: false, message: "Wrong password" });
     }
-
     const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, { expiresIn: "24h" });
     res.json({ success: true, token });
   } catch (err) {
@@ -118,52 +114,43 @@ app.post("/admin/login", async (req, res) => {
   }
 });
 
-// Create test – now with testType selector (paid or free)
 app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
-
     let { title, date, startTime, endTime, questions, testType } = req.body;
 
     if (!title?.trim() || !date || !Array.isArray(questions) || !["paid", "free"].includes(testType)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "title, date, questions array, and testType ('paid' or 'free') are required" 
-      });
+      return res.status(400).json({ success: false, message: "title, date, questions array, testType required" });
     }
 
     const numQuestions = questions.length;
-    const allowedCounts = [50, 150];
-    if (!allowedCounts.includes(numQuestions)) {
-      return res.status(400).json({
-        success: false,
-        message: "Allowed question counts: 50 or 150 only"
-      });
+    if (![50, 150].includes(numQuestions)) {
+      return res.status(400).json({ success: false, message: "Only 50 or 150 questions allowed" });
     }
 
     if (date.includes("T")) date = date.split("T")[0];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
+      return res.status(400).json({ success: false, message: "Date format must be YYYY-MM-DD" });
     }
 
-    const dateObj = new Date(date + "T00:00:00+05:30");
-    if (isNaN(dateObj.getTime())) {
-      return res.status(400).json({ success: false, message: "Invalid date" });
-    }
-
-    // ← FIXED: only block if same date + same testType
     const existing = await Test.findOne({ date, testType });
     if (existing) {
-      return res.status(409).json({ 
-        success: false, 
-        message: `A ${testType} test already exists for date ${date}` 
+      return res.status(409).json({
+        success: false,
+        message: `A ${testType} test already exists for ${date}`
       });
     }
 
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const base = new Date(date + "T00:00:00+05:30");
 
-    const start = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : new Date(dateObj.getTime());
-    const end   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS)   : new Date(dateObj.getTime() + 24*60*60*1000 - 1000);
+    const start = startTime
+      ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS)
+      : new Date(base.getTime());
+
+    const end = endTime
+      ? new Date(new Date(endTime).getTime() - IST_OFFSET_MS)
+      : new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1000); // 23:59:59 same day
 
     const test = await Test.create({
       title: title.trim(),
@@ -176,7 +163,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     const qDocs = questions.map((q, idx) => ({
       testId: test._id,
-      questionNumber: q.questionNumber || idx + 1,
+      questionNumber: q.questionNumber || (idx + 1),
       questionStatement: String(q.questionStatement || "").trim(),
       options: {
         option1: String(q.options?.option1 || "").trim(),
@@ -191,14 +178,14 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `${testType.toUpperCase()} test created successfully (${numQuestions} questions)`,
+      message: `${testType.toUpperCase()} test created (${numQuestions} questions)`,
       testId: test._id.toString(),
       date,
-      totalQuestions: numQuestions,
-      testType
+      startTimeIST: new Date(start.getTime() + IST_OFFSET_MS).toISOString(),
+      endTimeIST: new Date(end.getTime() + IST_OFFSET_MS).toISOString(),
     });
   } catch (err) {
-    console.error("Create test error:", err.message, err.stack);
+    console.error("create-test error:", err.message, err.stack);
     res.status(500).json({ success: false, message: err.message || "Creation failed" });
   }
 });
@@ -207,14 +194,12 @@ app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
     await connectDB();
     const tests = await Test.find().sort({ date: -1 }).lean();
-
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
     const testsWithIST = tests.map(t => ({
       ...t,
       startTimeIST: t.startTime ? new Date(t.startTime.getTime() + IST_OFFSET_MS).toISOString() : null,
-      endTimeIST:   t.endTime   ? new Date(t.endTime.getTime()   + IST_OFFSET_MS).toISOString() : null,
+      endTimeIST: t.endTime ? new Date(t.endTime.getTime() + IST_OFFSET_MS).toISOString() : null,
     }));
-
     res.json({ success: true, tests: testsWithIST });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load tests" });
