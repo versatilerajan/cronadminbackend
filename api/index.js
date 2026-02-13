@@ -134,7 +134,6 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     let { title, date, questions, testType } = req.body;
 
-    // Required fields validation
     if (!title?.trim() || !date || !Array.isArray(questions) || !["paid", "free"].includes(testType)) {
       return res.status(400).json({
         success: false,
@@ -144,7 +143,6 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     const numQuestions = questions.length;
 
-    // Determine phase
     let phase = null;
     if (numQuestions === 75) phase = "daily";
     else if (numQuestions === 100) phase = "gs";
@@ -152,32 +150,28 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     else {
       return res.status(400).json({
         success: false,
-        message: "Allowed question counts: 75 (daily), 100 (GS Sunday), 80 (CSAT Sunday) only"
+        message: "Allowed question counts: 75 (daily Mon-Sat), 100 (GS Sunday), 80 (CSAT Sunday) only"
       });
     }
 
-    // Normalize date
     if (date.includes("T")) date = date.split("T")[0];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
+      return res.status(400).json({ success: false, message: "Date must be in YYYY-MM-DD format" });
     }
 
     // ─── CORRECT full day IST window (00:00:00 – 23:59:59 IST) ───
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-    // Start: 00:00:00 IST on the date
-    const startTimeIST = new Date(date + 'T00:00:00+05:30');
+    const startTimeIST = new Date(`${date}T00:00:00+05:30`);
     if (isNaN(startTimeIST.getTime())) {
       return res.status(400).json({ success: false, message: "Invalid date format" });
     }
     const startTimeUTC = new Date(startTimeIST.getTime() - IST_OFFSET_MS);
 
-    // End: 23:59:59 IST on the SAME date
-    const endTimeIST = new Date(date + 'T23:59:59.999+05:30');
+    const endTimeIST = new Date(`${date}T23:59:59.999+05:30`);
     const endTimeUTC = new Date(endTimeIST.getTime() - IST_OFFSET_MS);
 
-    // Debug log (check Vercel logs)
-    console.log("Creating test timestamps:", {
+    console.log("Test time window:", {
       date,
       startIST: startTimeIST.toISOString(),
       startUTC: startTimeUTC.toISOString(),
@@ -195,9 +189,6 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       phase,
     });
 
-    console.log("Test created:", test._id.toString());
-
-    // Prepare questions
     const questionPhase = phase === "daily" ? "GS" : phase === "gs" ? "GS" : "CSAT";
 
     const qDocs = questions.map((q, idx) => ({
@@ -216,7 +207,6 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     await Question.insertMany(qDocs);
 
-    // Response with IST times
     const typeDisplay = testType.toUpperCase();
     const phaseDisplay = phase === "daily" ? "Daily" : phase.toUpperCase();
 
