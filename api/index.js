@@ -163,29 +163,28 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Date must be in YYYY-MM-DD format" });
     }
 
-    // ─── Force full day IST window on the chosen date ───
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-    // Create exact 00:00:00 IST on the given date
-    const chosenDateIST = new Date(`${date}T00:00:00+05:30`);
-    if (isNaN(chosenDateIST.getTime())) {
-      return res.status(400).json({ success: false, message: "Invalid date format" });
-    }
+// Create exact 00:00:00 IST on the given date
+const chosenDateIST = new Date(`${date}T00:00:00+05:30`);
+if (isNaN(chosenDateIST.getTime())) {
+  return res.status(400).json({ success: false, message: "Invalid date format" });
+}
 
-    // Convert to UTC for MongoDB storage
-    const startTimeUTC = new Date(chosenDateIST.getTime() - IST_OFFSET_MS);
-    const endTimeUTC = new Date(chosenDateIST.getTime() + 24 * 60 * 60 * 1000 - 1000 - IST_OFFSET_MS);
+// Convert to UTC for storage
+const startTimeUTC = new Date(chosenDateIST.getTime() - IST_OFFSET_MS);
+const endTimeUTC   = new Date(chosenDateIST.getTime() + 24 * 60 * 60 * 1000 - 1000 - IST_OFFSET_MS);
 
-    // Create the test document
-    const test = await Test.create({
-      title: title.trim(),
-      date,
-      startTime: startTimeUTC,
-      endTime: endTimeUTC,
-      totalQuestions: numQuestions,
-      testType,
-      phase,
-    });
+// Create the test — always include startTime & endTime
+const test = await Test.create({
+  title: title.trim(),
+  date,
+  startTime: startTimeUTC,
+  endTime: endTimeUTC,
+  totalQuestions: numQuestions,
+  testType,
+  phase,
+});
 
     // Prepare questions (phase mapping)
     const questionPhase = phase === "daily" ? "GS" : phase === "gs" ? "GS" : "CSAT";
