@@ -130,8 +130,9 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
 
-    let { title, date, startTime, endTime, questions, testType } = req.body;
+    let { title, date, questions, testType } = req.body;
 
+    // Required fields validation
     if (!title?.trim() || !date || !Array.isArray(questions) || !["paid", "free"].includes(testType)) {
       return res.status(400).json({
         success: false,
@@ -140,8 +141,9 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     }
 
     const numQuestions = questions.length;
-    let phase = null;
 
+    // Determine phase based on question count
+    let phase = null;
     if (numQuestions === 75) {
       phase = "daily";
     } else if (numQuestions === 100) {
@@ -155,57 +157,37 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       });
     }
 
-    // Normalize date to YYYY-MM-DD
+    // Normalize date → ensure it's YYYY-MM-DD
     if (date.includes("T")) date = date.split("T")[0];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
+      return res.status(400).json({ success: false, message: "Date must be in YYYY-MM-DD format" });
     }
 
-    // ─── KEY CHANGE: Force start & end to full day in IST if not provided ───
+    // ─── Force full day IST window on the chosen date ───
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-    // Base date at 00:00:00 IST
-    const dateStartIST = new Date(date + "T00:00:00+05:30");
-    if (isNaN(dateStartIST.getTime())) {
+    // Create exact 00:00:00 IST on the given date
+    const chosenDateIST = new Date(`${date}T00:00:00+05:30`);
+    if (isNaN(chosenDateIST.getTime())) {
       return res.status(400).json({ success: false, message: "Invalid date format" });
     }
 
-    let startUTC;
-    if (startTime) {
-      // Admin sent explicit time → respect it (convert to UTC)
-      startUTC = new Date(new Date(startTime).getTime() - IST_OFFSET_MS);
-    } else {
-      // Default: start at 00:00 IST
-      startUTC = new Date(dateStartIST.getTime() - IST_OFFSET_MS);
-    }
+    // Convert to UTC for MongoDB storage
+    const startTimeUTC = new Date(chosenDateIST.getTime() - IST_OFFSET_MS);
+    const endTimeUTC = new Date(chosenDateIST.getTime() + 24 * 60 * 60 * 1000 - 1000 - IST_OFFSET_MS);
 
-    let endUTC;
-    if (endTime) {
-      endUTC = new Date(new Date(endTime).getTime() - IST_OFFSET_MS);
-    } else {
-      // Default: end at 23:59:59 IST
-      const dateEndIST = new Date(dateStartIST.getTime() + 24 * 60 * 60 * 1000 - 1000);
-      endUTC = new Date(dateEndIST.getTime() - IST_OFFSET_MS);
-    }
-
-    // Safety: ensure end is after start
-    if (endUTC <= startUTC) {
-      return res.status(400).json({
-        success: false,
-        message: "End time must be after start time"
-      });
-    }
-
+    // Create the test document
     const test = await Test.create({
       title: title.trim(),
       date,
-      startTime: startUTC,
-      endTime: endUTC,
+      startTime: startTimeUTC,
+      endTime: endTimeUTC,
       totalQuestions: numQuestions,
       testType,
       phase,
     });
 
+    // Prepare questions (phase mapping)
     const questionPhase = phase === "daily" ? "GS" : phase === "gs" ? "GS" : "CSAT";
 
     const qDocs = questions.map((q, idx) => ({
@@ -224,6 +206,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     await Question.insertMany(qDocs);
 
+    // Response with IST times for frontend clarity
     const typeDisplay = testType.toUpperCase();
     const phaseDisplay = phase === "daily" ? "Daily" : phase.toUpperCase();
 
@@ -235,8 +218,8 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       totalQuestions: numQuestions,
       testType,
       phase,
-      startTimeIST: new Date(startUTC.getTime() + IST_OFFSET_MS).toISOString(),
-      endTimeIST: new Date(endUTC.getTime() + IST_OFFSET_MS).toISOString(),
+      startTimeIST: new Date(startTimeUTC.getTime() + IST_OFFSET_MS).toISOString(),
+      endTimeIST: new Date(endTimeUTC.getTime() + IST_OFFSET_MS).toISOString(),
     });
   } catch (err) {
     console.error("Create test error:", err);
