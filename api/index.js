@@ -117,15 +117,10 @@ app.post("/admin/login", async (req, res) => {
 app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
-    let { title, date, startTime, endTime, questions, testType } = req.body;
+    let { title, date, startTime, endTime, questions, testType, isSundayFullTest = false } = req.body;
 
     if (!title?.trim() || !date || !Array.isArray(questions) || !["paid", "free"].includes(testType)) {
-      return res.status(400).json({ success: false, message: "title, date, questions array, and testType ('paid' or 'free') are required" });
-    }
-
-    const numQuestions = questions.length;
-    if (![50, 150].includes(numQuestions)) {
-      return res.status(400).json({ success: false, message: "Allowed question counts: 50 or 150 only" });
+      return res.status(400).json({ success: false, message: "title, date, questions array, testType required" });
     }
 
     if (date.includes("T")) date = date.split("T")[0];
@@ -133,35 +128,33 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
     }
 
-    const dateObj = new Date(date + "T00:00:00+05:30");
-    if (isNaN(dateObj.getTime())) {
-      return res.status(400).json({ success: false, message: "Invalid date" });
-    }
-
     const existing = await Test.findOne({ date, testType });
     if (existing) {
-      return res.status(409).json({
+      return res.status(409).json({ success: false, message: `Test already exists for ${date}` });
+    }
+
+    let expectedCount = isSundayFullTest ? 180 : 75;
+    if (questions.length !== expectedCount) {
+      return res.status(400).json({
         success: false,
-        message: `A ${testType} test already exists for date ${date}`
+        message: isSundayFullTest ? "Sunday full test must have exactly 180 questions (100 GS + 80 CSAT)" : "Daily test must have exactly 75 questions"
       });
     }
 
+    const dateObj = new Date(date + "T00:00:00+05:30");
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const start = startTime
-      ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS)
-      : new Date(dateObj.getTime());
 
-    const end = endTime
-      ? new Date(new Date(endTime).getTime() - IST_OFFSET_MS)
-      : new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1000);
+    const start = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : new Date(dateObj.getTime());
+    const end   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS) : new Date(start.getTime() + 24*60*60*1000 - 1000);
 
     const test = await Test.create({
       title: title.trim(),
       date,
       startTime: start,
       endTime: end,
-      totalQuestions: numQuestions,
+      totalQuestions: questions.length,
       testType,
+      isSundayFullTest: !!isSundayFullTest
     });
 
     const qDocs = questions.map((q, idx) => ({
@@ -175,29 +168,28 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
         option4: String(q.options?.option4 || "").trim(),
       },
       correctOption: q.correctOption,
+      phase: isSundayFullTest
+        ? (idx < 100 ? "GS" : "CSAT")
+        : "GS"
     }));
 
     await Question.insertMany(qDocs);
 
-    // Safe upper case with fallback
-    const typeDisplay = testType ? testType.toUpperCase() : "TEST";
-
     res.json({
       success: true,
-      message: `${typeDisplay} test created successfully (${numQuestions} questions)`,
+      message: `${isSundayFullTest ? "UPSC Sunday Full Test" : "Daily Test"} created (${questions.length} questions)`,
       testId: test._id.toString(),
       date,
-      totalQuestions: numQuestions,
-      testType,
+      totalQuestions: questions.length,
+      isSundayFullTest: test.isSundayFullTest,
       startTimeIST: new Date(start.getTime() + IST_OFFSET_MS).toISOString(),
       endTimeIST: new Date(end.getTime() + IST_OFFSET_MS).toISOString(),
     });
   } catch (err) {
-    console.error("Create test error:", err.message, err.stack);
+    console.error("Create test error:", err);
     res.status(500).json({ success: false, message: err.message || "Creation failed" });
   }
 });
-
 app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
     await connectDB();
