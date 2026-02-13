@@ -45,6 +45,11 @@ const testSchema = new mongoose.Schema({
     enum: ["paid", "free"],
     required: true
   },
+  phase: { 
+    type: String, 
+    enum: ["daily", "gs", "csat", null], 
+    default: null 
+  },   // NEW FIELD
 }, { timestamps: true });
 
 const questionSchema = new mongoose.Schema({
@@ -62,6 +67,11 @@ const questionSchema = new mongoose.Schema({
     enum: ["option1", "option2", "option3", "option4"],
     required: true,
   },
+  phase: { 
+    type: String, 
+    enum: ["GS", "CSAT"], 
+    default: "GS" 
+  },   // NEW FIELD - per question
 }, { timestamps: true });
 
 const adminSchema = new mongoose.Schema({
@@ -102,11 +112,14 @@ app.post("/admin/login", async (req, res) => {
     await connectDB();
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: "Email & password required" });
+
     const admin = await Admin.findOne({ email: email.toLowerCase().trim() });
     if (!admin) return res.status(401).json({ success: false, message: "Admin not found" });
+
     if (!await bcrypt.compare(password, admin.password)) {
       return res.status(401).json({ success: false, message: "Wrong password" });
     }
+
     const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, { expiresIn: "24h" });
     res.json({ success: true, token });
   } catch (err) {
@@ -117,10 +130,36 @@ app.post("/admin/login", async (req, res) => {
 app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
     await connectDB();
-    let { title, date, startTime, endTime, questions, testType, isSundayFullTest = false } = req.body;
+
+    let { title, date, startTime, endTime, questions, testType } = req.body;
 
     if (!title?.trim() || !date || !Array.isArray(questions) || !["paid", "free"].includes(testType)) {
-      return res.status(400).json({ success: false, message: "title, date, questions array, testType required" });
+      return res.status(400).json({ 
+        success: false, 
+        message: "title, date, questions array, and testType ('paid' or 'free') are required" 
+      });
+    }
+
+    const numQuestions = questions.length;
+
+    // ─── UPDATED VALIDATION ───────────────────────────────────────
+    let phase = null;
+    let expectedCountMessage = "";
+
+    if (numQuestions === 75) {
+      phase = "daily";
+      expectedCountMessage = "Daily test (Mon–Sat)";
+    } else if (numQuestions === 100) {
+      phase = "gs";
+      expectedCountMessage = "GS Paper (Sunday Phase 1)";
+    } else if (numQuestions === 80) {
+      phase = "csat";
+      expectedCountMessage = "CSAT Paper (Sunday Phase 2)";
+    } else {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Allowed question counts: 75 (daily), 100 (GS paper), 80 (CSAT paper) only" 
+      });
     }
 
     if (date.includes("T")) date = date.split("T")[0];
@@ -128,34 +167,39 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
     }
 
-    const existing = await Test.findOne({ date, testType });
-    if (existing) {
-      return res.status(409).json({ success: false, message: `Test already exists for ${date}` });
+    const dateObj = new Date(date + "T00:00:00+05:30");
+    if (isNaN(dateObj.getTime())) {
+      return res.status(400).json({ success: false, message: "Invalid date" });
     }
 
-    let expectedCount = isSundayFullTest ? 180 : 75;
-    if (questions.length !== expectedCount) {
-      return res.status(400).json({
+    const existing = await Test.findOne({ date, testType, phase });
+    if (existing) {
+      return res.status(409).json({
         success: false,
-        message: isSundayFullTest ? "Sunday full test must have exactly 180 questions (100 GS + 80 CSAT)" : "Daily test must have exactly 75 questions"
+        message: `A ${testType} ${expectedCountMessage} already exists for date ${date}`
       });
     }
 
-    const dateObj = new Date(date + "T00:00:00+05:30");
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-
-    const start = startTime ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS) : new Date(dateObj.getTime());
-    const end   = endTime   ? new Date(new Date(endTime).getTime()   - IST_OFFSET_MS) : new Date(start.getTime() + 24*60*60*1000 - 1000);
+    const start = startTime
+      ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS)
+      : new Date(dateObj.getTime());
+    const end = endTime
+      ? new Date(new Date(endTime).getTime() - IST_OFFSET_MS)
+      : new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1000);
 
     const test = await Test.create({
       title: title.trim(),
       date,
       startTime: start,
       endTime: end,
-      totalQuestions: questions.length,
+      totalQuestions: numQuestions,
       testType,
-      isSundayFullTest: !!isSundayFullTest
+      phase,                    // NEW: daily / gs / csat
     });
+
+    // Automatically assign phase to each question
+    const questionPhase = phase === "daily" ? "GS" : phase === "gs" ? "GS" : "CSAT";
 
     const qDocs = questions.map((q, idx) => ({
       testId: test._id,
@@ -168,38 +212,46 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
         option4: String(q.options?.option4 || "").trim(),
       },
       correctOption: q.correctOption,
-      phase: isSundayFullTest
-        ? (idx < 100 ? "GS" : "CSAT")
-        : "GS"
+      phase: questionPhase           // NEW: GS or CSAT per question
     }));
 
     await Question.insertMany(qDocs);
 
+    const typeDisplay = testType.toUpperCase();
+    const phaseDisplay = phase === "daily" ? "Daily" : phase.toUpperCase();
+
     res.json({
       success: true,
-      message: `${isSundayFullTest ? "UPSC Sunday Full Test" : "Daily Test"} created (${questions.length} questions)`,
+      message: `${typeDisplay} ${phaseDisplay} test created successfully (${numQuestions} questions)`,
       testId: test._id.toString(),
       date,
-      totalQuestions: questions.length,
-      isSundayFullTest: test.isSundayFullTest,
+      totalQuestions: numQuestions,
+      testType,
+      phase,
       startTimeIST: new Date(start.getTime() + IST_OFFSET_MS).toISOString(),
       endTimeIST: new Date(end.getTime() + IST_OFFSET_MS).toISOString(),
     });
   } catch (err) {
-    console.error("Create test error:", err);
+    console.error("Create test error:", err.message, err.stack);
     res.status(500).json({ success: false, message: err.message || "Creation failed" });
   }
 });
+
 app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
     await connectDB();
     const tests = await Test.find().sort({ date: -1 }).lean();
+
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
     const testsWithIST = tests.map(t => ({
       ...t,
       startTimeIST: t.startTime ? new Date(t.startTime.getTime() + IST_OFFSET_MS).toISOString() : null,
       endTimeIST: t.endTime ? new Date(t.endTime.getTime() + IST_OFFSET_MS).toISOString() : null,
+      phaseDisplay: t.phase === "daily" ? "Daily (75)" :
+                    t.phase === "gs"    ? "GS Paper (100)" :
+                    t.phase === "csat"  ? "CSAT Paper (80)" : "—"
     }));
+
     res.json({ success: true, tests: testsWithIST });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load tests" });
