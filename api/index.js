@@ -165,19 +165,18 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     // ─── CORRECT full day IST window (00:00:00 – 23:59:59 IST) ───
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-    // Start: exactly 00:00:00 IST
-    const startTimeIST = new Date(`${date}T00:00:00+05:30`);
+    // Start: 00:00:00 IST on the date
+    const startTimeIST = new Date(date + 'T00:00:00+05:30');
     if (isNaN(startTimeIST.getTime())) {
       return res.status(400).json({ success: false, message: "Invalid date format" });
     }
     const startTimeUTC = new Date(startTimeIST.getTime() - IST_OFFSET_MS);
 
-    // End: exactly 23:59:59 IST on the SAME day
-    const endTimeIST = new Date(startTimeIST);
-    endTimeIST.setUTCHours(23, 59, 59, 999);
+    // End: 23:59:59 IST on the SAME date
+    const endTimeIST = new Date(date + 'T23:59:59.999+05:30');
     const endTimeUTC = new Date(endTimeIST.getTime() - IST_OFFSET_MS);
 
-    // Debug log — remove later if you want
+    // Debug log (check Vercel logs)
     console.log("Creating test timestamps:", {
       date,
       startIST: startTimeIST.toISOString(),
