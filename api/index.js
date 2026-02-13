@@ -165,21 +165,25 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     // ─── CORRECT full day IST window (00:00:00 – 23:59:59 IST) ───
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-    // Start: 00:00:00 IST
-    const startTimeUTC = new Date(`${date}T00:00:00+05:30`);
-    startTimeUTC.setUTCHours(startTimeUTC.getUTCHours() - 5);
-    startTimeUTC.setUTCMinutes(startTimeUTC.getUTCMinutes() - 30);
+    // Start: exactly 00:00:00 IST
+    const startTimeIST = new Date(`${date}T00:00:00+05:30`);
+    if (isNaN(startTimeIST.getTime())) {
+      return res.status(400).json({ success: false, message: "Invalid date format" });
+    }
+    const startTimeUTC = new Date(startTimeIST.getTime() - IST_OFFSET_MS);
 
-    // End: 23:59:59 IST same day
-    const endTimeUTC = new Date(`${date}T23:59:59+05:30`);
-    endTimeUTC.setUTCHours(endTimeUTC.getUTCHours() - 5);
-    endTimeUTC.setUTCMinutes(endTimeUTC.getUTCMinutes() - 30);
+    // End: exactly 23:59:59 IST on the SAME day
+    const endTimeIST = new Date(startTimeIST);
+    endTimeIST.setUTCHours(23, 59, 59, 999);
+    const endTimeUTC = new Date(endTimeIST.getTime() - IST_OFFSET_MS);
 
-    // Debug log (check Vercel logs after creation)
-    console.log("Creating test:", {
+    // Debug log — remove later if you want
+    console.log("Creating test timestamps:", {
       date,
-      startTimeUTC: startTimeUTC.toISOString(),
-      endTimeUTC: endTimeUTC.toISOString()
+      startIST: startTimeIST.toISOString(),
+      startUTC: startTimeUTC.toISOString(),
+      endIST: endTimeIST.toISOString(),
+      endUTC: endTimeUTC.toISOString()
     });
 
     const test = await Test.create({
@@ -225,8 +229,8 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       totalQuestions: numQuestions,
       testType,
       phase,
-      startTimeIST: new Date(startTimeUTC.getTime() + IST_OFFSET_MS).toISOString(),
-      endTimeIST: new Date(endTimeUTC.getTime() + IST_OFFSET_MS).toISOString(),
+      startTimeIST: startTimeIST.toISOString(),
+      endTimeIST: endTimeIST.toISOString(),
     });
   } catch (err) {
     console.error("Create test error:", err);
