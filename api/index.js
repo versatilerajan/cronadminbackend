@@ -41,8 +41,6 @@ connectDB().catch(err => console.error("Initial DB connect failed:", err));
 const testSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true, maxlength: 200 },
   date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
-  startTime: Date,
-  endTime: Date,
   totalQuestions: { type: Number, default: 0 },
   testType: {
     type: String,
