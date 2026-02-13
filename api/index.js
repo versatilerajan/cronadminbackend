@@ -173,8 +173,11 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid date format" });
     }
 
-    const startTimeUTC = new Date(chosenDateIST.getTime() - IST_OFFSET_MS);
-    const endTimeUTC   = new Date(chosenDateIST.getTime() + 24 * 60 * 60 * 1000 - 1000 - IST_OFFSET_MS);
+    const startTimeUTC = new Date(`${date}T00:00:00+05:30`);
+    startTimeUTC.setHours(startTimeUTC.getHours() - 5, startTimeUTC.getMinutes() - 30);
+
+    const endTimeUTC = new Date(`${date}T23:59:59+05:30`);
+    endTimeUTC.setHours(endTimeUTC.getHours() - 5, endTimeUTC.getMinutes() - 30);
 
     // Create test — fields are now guaranteed
     const test = await Test.create({
