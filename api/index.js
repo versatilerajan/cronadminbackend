@@ -41,8 +41,8 @@ connectDB().catch(err => console.error("Initial DB connect failed:", err));
 const testSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true, maxlength: 200 },
   date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
-  startTime: { type: Date },          // ← FIXED: must exist
-  endTime:   { type: Date },          // ← FIXED: must exist
+  startTime: { type: Date },
+  endTime: { type: Date },
   totalQuestions: { type: Number, default: 0 },
   testType: {
     type: String,
@@ -144,42 +144,44 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     const numQuestions = questions.length;
 
-    // Determine phase based on question count
+    // Determine phase
     let phase = null;
-    if (numQuestions === 75) {
-      phase = "daily";
-    } else if (numQuestions === 100) {
-      phase = "gs";
-    } else if (numQuestions === 80) {
-      phase = "csat";
-    } else {
+    if (numQuestions === 75) phase = "daily";
+    else if (numQuestions === 100) phase = "gs";
+    else if (numQuestions === 80) phase = "csat";
+    else {
       return res.status(400).json({
         success: false,
-        message: "Allowed question counts: 75 (daily Mon-Sat), 100 (GS Sunday), 80 (CSAT Sunday) only"
+        message: "Allowed question counts: 75 (daily), 100 (GS Sunday), 80 (CSAT Sunday) only"
       });
     }
 
-    // Normalize date → ensure it's YYYY-MM-DD
+    // Normalize date
     if (date.includes("T")) date = date.split("T")[0];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ success: false, message: "Date must be in YYYY-MM-DD format" });
+      return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
     }
 
-    // ─── FORCE full day IST window on chosen date ───
+    // ─── CORRECT full day IST window (00:00:00 – 23:59:59 IST) ───
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-    const chosenDateIST = new Date(`${date}T00:00:00+05:30`);
-    if (isNaN(chosenDateIST.getTime())) {
-      return res.status(400).json({ success: false, message: "Invalid date format" });
-    }
-
+    // Start: 00:00:00 IST
     const startTimeUTC = new Date(`${date}T00:00:00+05:30`);
-    startTimeUTC.setHours(startTimeUTC.getHours() - 5, startTimeUTC.getMinutes() - 30);
+    startTimeUTC.setUTCHours(startTimeUTC.getUTCHours() - 5);
+    startTimeUTC.setUTCMinutes(startTimeUTC.getUTCMinutes() - 30);
 
+    // End: 23:59:59 IST same day
     const endTimeUTC = new Date(`${date}T23:59:59+05:30`);
-    endTimeUTC.setHours(endTimeUTC.getHours() - 5, endTimeUTC.getMinutes() - 30);
+    endTimeUTC.setUTCHours(endTimeUTC.getUTCHours() - 5);
+    endTimeUTC.setUTCMinutes(endTimeUTC.getUTCMinutes() - 30);
 
-    // Create test — fields are now guaranteed
+    // Debug log (check Vercel logs after creation)
+    console.log("Creating test:", {
+      date,
+      startTimeUTC: startTimeUTC.toISOString(),
+      endTimeUTC: endTimeUTC.toISOString()
+    });
+
     const test = await Test.create({
       title: title.trim(),
       date,
@@ -189,6 +191,8 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       testType,
       phase,
     });
+
+    console.log("Test created:", test._id.toString());
 
     // Prepare questions
     const questionPhase = phase === "daily" ? "GS" : phase === "gs" ? "GS" : "CSAT";
@@ -209,7 +213,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     await Question.insertMany(qDocs);
 
-    // Response
+    // Response with IST times
     const typeDisplay = testType.toUpperCase();
     const phaseDisplay = phase === "daily" ? "Daily" : phase.toUpperCase();
 
