@@ -158,36 +158,30 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ success: false, message: "Date must be in YYYY-MM-DD format" });
     }
-     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    
+    // ─── CORRECT full day IST window (00:00:00 – 23:59:59 IST on same day) ───
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
-    // Start: 00:00:00 IST
+    // Start: exactly 00:00:00 IST
     const startTimeIST = new Date(`${date}T00:00:00.000+05:30`);
     if (isNaN(startTimeIST.getTime())) {
       return res.status(400).json({ success: false, message: "Invalid date format" });
     }
     const startTimeUTC = new Date(startTimeIST.getTime() - IST_OFFSET_MS);
 
-    // End: 23:59:59.999 IST on the SAME day (add 23 hours 59 min 59.999 sec)
-    const endTimeIST = new Date(startTimeIST.getTime() + 23 * 60 * 60 * 1000 + 59 * 60 * 1000 + 59.999 * 1000);
+    // End: exactly 23:59:59.999 IST on SAME date
+    // Use millisecond addition instead of setHours/setMinutes
+    const endTimeIST = new Date(startTimeIST.getTime() + (23 * 3600000) + (59 * 60000) + (59.999 * 1000));
     const endTimeUTC = new Date(endTimeIST.getTime() - IST_OFFSET_MS);
 
-    // Debug log — keep this to verify in Vercel logs
-    console.log("Test window created:", {
+    // Debug log (check Vercel logs after creation)
+    console.log("Test window:", {
       date,
       startIST: startTimeIST.toISOString(),
       startUTC: startTimeUTC.toISOString(),
       endIST: endTimeIST.toISOString(),
       endUTC: endTimeUTC.toISOString()
     });
-
-// Debug log — keep this for now
-console.log("Test window (IST → UTC):", {
-  date,
-  startIST: startTimeIST.toISOString(),
-  startUTC: startTimeUTC.toISOString(),
-  endIST: endTimeIST.toISOString(),
-  endUTC: endTimeUTC.toISOString()
-});
 
     const test = await Test.create({
       title: title.trim(),
