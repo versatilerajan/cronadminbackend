@@ -33,6 +33,8 @@ async function connectDB() {
   console.log("MongoDB connected");
 }
 
+connectDB().catch(err => console.error("Initial DB connect failed:", err));
+
 // ================= SCHEMAS =================
 const testSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true, maxlength: 200 },
@@ -49,8 +51,10 @@ const testSchema = new mongoose.Schema({
     type: String, 
     enum: ["daily", "gs", "csat", null], 
     default: null 
-  },   // NEW FIELD
+  },
 }, { timestamps: true });
+
+// NO unique index here anymore → multiple tests per date allowed
 
 const questionSchema = new mongoose.Schema({
   testId: { type: mongoose.Schema.Types.ObjectId, ref: "Test", required: true },
@@ -71,7 +75,7 @@ const questionSchema = new mongoose.Schema({
     type: String, 
     enum: ["GS", "CSAT"], 
     default: "GS" 
-  },   // NEW FIELD - per question
+  },
 }, { timestamps: true });
 
 const adminSchema = new mongoose.Schema({
@@ -141,24 +145,18 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     }
 
     const numQuestions = questions.length;
-
-    // ─── UPDATED VALIDATION ───────────────────────────────────────
     let phase = null;
-    let expectedCountMessage = "";
 
     if (numQuestions === 75) {
       phase = "daily";
-      expectedCountMessage = "Daily test (Mon–Sat)";
     } else if (numQuestions === 100) {
       phase = "gs";
-      expectedCountMessage = "GS Paper (Sunday Phase 1)";
     } else if (numQuestions === 80) {
       phase = "csat";
-      expectedCountMessage = "CSAT Paper (Sunday Phase 2)";
     } else {
       return res.status(400).json({ 
         success: false, 
-        message: "Allowed question counts: 75 (daily), 100 (GS paper), 80 (CSAT paper) only" 
+        message: "Allowed question counts: 75 (daily Mon-Sat), 100 (GS Sunday), 80 (CSAT Sunday) only" 
       });
     }
 
@@ -172,13 +170,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid date" });
     }
 
-    const existing = await Test.findOne({ date, testType, phase });
-    if (existing) {
-      return res.status(409).json({
-        success: false,
-        message: `A ${testType} ${expectedCountMessage} already exists for date ${date}`
-      });
-    }
+    // No uniqueness check anymore → multiple tests per date allowed
 
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
     const start = startTime
@@ -195,10 +187,9 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       endTime: end,
       totalQuestions: numQuestions,
       testType,
-      phase,                    // NEW: daily / gs / csat
+      phase,
     });
 
-    // Automatically assign phase to each question
     const questionPhase = phase === "daily" ? "GS" : phase === "gs" ? "GS" : "CSAT";
 
     const qDocs = questions.map((q, idx) => ({
@@ -212,7 +203,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
         option4: String(q.options?.option4 || "").trim(),
       },
       correctOption: q.correctOption,
-      phase: questionPhase           // NEW: GS or CSAT per question
+      phase: questionPhase
     }));
 
     await Question.insertMany(qDocs);
@@ -222,7 +213,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `${typeDisplay} ${phaseDisplay} test created successfully (${numQuestions} questions)`,
+      message: `${typeDisplay} ${phaseDisplay} test created successfully (${numQuestions} questions) on ${date}`,
       testId: test._id.toString(),
       date,
       totalQuestions: numQuestions,
@@ -232,7 +223,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       endTimeIST: new Date(end.getTime() + IST_OFFSET_MS).toISOString(),
     });
   } catch (err) {
-    console.error("Create test error:", err.message, err.stack);
+    console.error("Create test error:", err);
     res.status(500).json({ success: false, message: err.message || "Creation failed" });
   }
 });
@@ -240,16 +231,16 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
     await connectDB();
-    const tests = await Test.find().sort({ date: -1 }).lean();
+    const tests = await Test.find().sort({ date: -1, phase: 1 }).lean();
 
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
     const testsWithIST = tests.map(t => ({
       ...t,
       startTimeIST: t.startTime ? new Date(t.startTime.getTime() + IST_OFFSET_MS).toISOString() : null,
       endTimeIST: t.endTime ? new Date(t.endTime.getTime() + IST_OFFSET_MS).toISOString() : null,
-      phaseDisplay: t.phase === "daily" ? "Daily (75)" :
-                    t.phase === "gs"    ? "GS Paper (100)" :
-                    t.phase === "csat"  ? "CSAT Paper (80)" : "—"
+      phaseDisplay: t.phase === "daily" ? "Daily (75q)" :
+                    t.phase === "gs"    ? "GS Paper (100q)" :
+                    t.phase === "csat"  ? "CSAT Paper (80q)" : "Unknown"
     }));
 
     res.json({ success: true, tests: testsWithIST });
