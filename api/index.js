@@ -14,6 +14,7 @@ app.use(helmet());
 app.use(compression());
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 400 }));
 app.use(express.json({ limit: "100kb" }));
+
 app.use(cors({
   origin: true,
   methods: ["GET", "POST", "DELETE", "OPTIONS"],
@@ -21,6 +22,7 @@ app.use(cors({
   credentials: true,
   optionsSuccessStatus: 204,
 }));
+
 app.options(/.*/, cors());
 
 // ================= DB CONNECT =================
@@ -47,14 +49,12 @@ const testSchema = new mongoose.Schema({
     enum: ["paid", "free"],
     required: true
   },
-  phase: { 
-    type: String, 
-    enum: ["daily", "gs", "csat", null], 
-    default: null 
+  phase: {
+    type: String,
+    enum: ["daily", "gs", "csat", null],
+    default: null
   },
 }, { timestamps: true });
-
-// NO unique index here anymore → multiple tests per date allowed
 
 const questionSchema = new mongoose.Schema({
   testId: { type: mongoose.Schema.Types.ObjectId, ref: "Test", required: true },
@@ -71,10 +71,10 @@ const questionSchema = new mongoose.Schema({
     enum: ["option1", "option2", "option3", "option4"],
     required: true,
   },
-  phase: { 
-    type: String, 
-    enum: ["GS", "CSAT"], 
-    default: "GS" 
+  phase: {
+    type: String,
+    enum: ["GS", "CSAT"],
+    default: "GS"
   },
 }, { timestamps: true });
 
@@ -116,14 +116,11 @@ app.post("/admin/login", async (req, res) => {
     await connectDB();
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ success: false, message: "Email & password required" });
-
     const admin = await Admin.findOne({ email: email.toLowerCase().trim() });
     if (!admin) return res.status(401).json({ success: false, message: "Admin not found" });
-
     if (!await bcrypt.compare(password, admin.password)) {
       return res.status(401).json({ success: false, message: "Wrong password" });
     }
-
     const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, { expiresIn: "24h" });
     res.json({ success: true, token });
   } catch (err) {
@@ -138,9 +135,9 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     let { title, date, startTime, endTime, questions, testType } = req.body;
 
     if (!title?.trim() || !date || !Array.isArray(questions) || !["paid", "free"].includes(testType)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "title, date, questions array, and testType ('paid' or 'free') are required" 
+      return res.status(400).json({
+        success: false,
+        message: "title, date, questions array, and testType ('paid' or 'free') are required"
       });
     }
 
@@ -154,37 +151,58 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
     } else if (numQuestions === 80) {
       phase = "csat";
     } else {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Allowed question counts: 75 (daily Mon-Sat), 100 (GS Sunday), 80 (CSAT Sunday) only" 
+      return res.status(400).json({
+        success: false,
+        message: "Allowed question counts: 75 (daily Mon-Sat), 100 (GS Sunday), 80 (CSAT Sunday) only"
       });
     }
 
+    // Normalize date to YYYY-MM-DD
     if (date.includes("T")) date = date.split("T")[0];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ success: false, message: "Date must be YYYY-MM-DD" });
     }
 
-    const dateObj = new Date(date + "T00:00:00+05:30");
-    if (isNaN(dateObj.getTime())) {
-      return res.status(400).json({ success: false, message: "Invalid date" });
+    // ─── KEY CHANGE: Force start & end to full day in IST if not provided ───
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+    // Base date at 00:00:00 IST
+    const dateStartIST = new Date(date + "T00:00:00+05:30");
+    if (isNaN(dateStartIST.getTime())) {
+      return res.status(400).json({ success: false, message: "Invalid date format" });
     }
 
-    // No uniqueness check anymore → multiple tests per date allowed
+    let startUTC;
+    if (startTime) {
+      // Admin sent explicit time → respect it (convert to UTC)
+      startUTC = new Date(new Date(startTime).getTime() - IST_OFFSET_MS);
+    } else {
+      // Default: start at 00:00 IST
+      startUTC = new Date(dateStartIST.getTime() - IST_OFFSET_MS);
+    }
 
-    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-    const start = startTime
-      ? new Date(new Date(startTime).getTime() - IST_OFFSET_MS)
-      : new Date(dateObj.getTime());
-    const end = endTime
-      ? new Date(new Date(endTime).getTime() - IST_OFFSET_MS)
-      : new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1000);
+    let endUTC;
+    if (endTime) {
+      endUTC = new Date(new Date(endTime).getTime() - IST_OFFSET_MS);
+    } else {
+      // Default: end at 23:59:59 IST
+      const dateEndIST = new Date(dateStartIST.getTime() + 24 * 60 * 60 * 1000 - 1000);
+      endUTC = new Date(dateEndIST.getTime() - IST_OFFSET_MS);
+    }
+
+    // Safety: ensure end is after start
+    if (endUTC <= startUTC) {
+      return res.status(400).json({
+        success: false,
+        message: "End time must be after start time"
+      });
+    }
 
     const test = await Test.create({
       title: title.trim(),
       date,
-      startTime: start,
-      endTime: end,
+      startTime: startUTC,
+      endTime: endUTC,
       totalQuestions: numQuestions,
       testType,
       phase,
@@ -219,8 +237,8 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       totalQuestions: numQuestions,
       testType,
       phase,
-      startTimeIST: new Date(start.getTime() + IST_OFFSET_MS).toISOString(),
-      endTimeIST: new Date(end.getTime() + IST_OFFSET_MS).toISOString(),
+      startTimeIST: new Date(startUTC.getTime() + IST_OFFSET_MS).toISOString(),
+      endTimeIST: new Date(endUTC.getTime() + IST_OFFSET_MS).toISOString(),
     });
   } catch (err) {
     console.error("Create test error:", err);
@@ -232,17 +250,15 @@ app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
     await connectDB();
     const tests = await Test.find().sort({ date: -1, phase: 1 }).lean();
-
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
     const testsWithIST = tests.map(t => ({
       ...t,
       startTimeIST: t.startTime ? new Date(t.startTime.getTime() + IST_OFFSET_MS).toISOString() : null,
       endTimeIST: t.endTime ? new Date(t.endTime.getTime() + IST_OFFSET_MS).toISOString() : null,
       phaseDisplay: t.phase === "daily" ? "Daily (75q)" :
-                    t.phase === "gs"    ? "GS Paper (100q)" :
-                    t.phase === "csat"  ? "CSAT Paper (80q)" : "Unknown"
+                    t.phase === "gs" ? "GS Paper (100q)" :
+                    t.phase === "csat" ? "CSAT Paper (80q)" : "Unknown"
     }));
-
     res.json({ success: true, tests: testsWithIST });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load tests" });
