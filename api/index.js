@@ -364,18 +364,9 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
 
     const trimmedTitle = title.trim();
 
-    const startTimeUTC = makeDateUTC(date, "00:00:00.000");
-    const endTimeUTC   = makeDateUTC(date, "23:59:59.999");
-
-    if (isNaN(startTimeUTC.getTime()) || isNaN(endTimeUTC.getTime())) {
-      return res.status(400).json({ success: false, message: "Invalid date — could not compute timestamps" });
-    }
-
     const test = await Test.create({
       title: trimmedTitle,
       date,
-      startTime: startTimeUTC,
-      endTime:   endTimeUTC,
       totalQuestions: questions.length,
       testType: "free",
       phase: "free pcs",
@@ -416,8 +407,7 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
       totalQuestions: questions.length,
       testType: "free",
       phase: "free pcs",
-      startTimeIST: `${date}T00:00:00+05:30`,
-      endTimeIST:   `${date}T23:59:59+05:30`,
+      availability: "No expiry — this test stays available until an admin deletes it",
     });
   } catch (err) {
     console.error("Create free PCS test error:", err);
