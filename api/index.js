@@ -141,6 +141,21 @@ const Question = questionConn.models.Question || questionConn.model("Question", 
 
 const FreePCSQuestion = freePcsConn.models.FreePCSQuestion || freePcsConn.model("FreePCSQuestion", freePCSQuestionSchema);
 
+function slugify(title) {
+  return title
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 50) || "test";
+}
+
+function getFreePCSModel(collectionName) {
+  return freePcsConn.models[collectionName] ||
+    freePcsConn.model(collectionName, freePCSQuestionSchema, collectionName);
+}
+
 const adminAuth = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
@@ -373,6 +388,12 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
       phase: "free pcs",
     });
 
+    const collectionName = `fpcs_${slugify(trimmedTitle)}_${test._id.toString().slice(-6)}`;
+    test.collectionName = collectionName;
+    await test.save();
+
+    const FreePCSQuestionDyn = getFreePCSModel(collectionName);
+
     const qDocs = questions.map((q) => ({
       testId: test._id,
       title: trimmedTitle,
@@ -395,12 +416,13 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
       phase: "free pcs",
     }));
 
-    await FreePCSQuestion.insertMany(qDocs);
+    await FreePCSQuestionDyn.insertMany(qDocs);
 
     res.json({
       success: true,
       message: `Free PCS test created for ${examType.trim()} ${yearNum}`,
       testId: test._id.toString(),
+      collectionName,
       title: trimmedTitle,
       date,
       examType: examType.trim(),
@@ -449,8 +471,16 @@ app.get("/admin/free-pcs-questions/:testId", adminAuth, async (req, res) => {
   try {
     await connectDB();
     const { testId } = req.params;
-    const questions = await FreePCSQuestion.find({ testId }).sort({ createdAt: 1 }).lean();
-    res.json({ success: true, count: questions.length, questions });
+
+    const test = await Test.findById(testId).lean();
+    if (!test) {
+      return res.status(404).json({ success: false, message: "Test not found" });
+    }
+
+    const Model = test.collectionName ? getFreePCSModel(test.collectionName) : FreePCSQuestion;
+
+    const questions = await Model.find({ testId }).sort({ createdAt: 1 }).lean();
+    res.json({ success: true, count: questions.length, questions, collectionName: test.collectionName || null });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load free PCS questions" });
   }
@@ -467,8 +497,18 @@ app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
       return res.status(404).json({ success: false, message: "Test not found" });
     }
 
-    const qResult  = await Question.deleteMany({ testId });
-    const pResult  = await FreePCSQuestion.deleteMany({ testId });
+    const qResult = await Question.deleteMany({ testId });
+
+    let pDeletedCount = 0;
+    if (test.collectionName) {
+      const Model = getFreePCSModel(test.collectionName);
+      const pResult = await Model.deleteMany({ testId });
+      pDeletedCount = pResult.deletedCount;
+    } else {
+      const pResult = await FreePCSQuestion.deleteMany({ testId });
+      pDeletedCount = pResult.deletedCount;
+    }
+
     const rResult  = await Result.deleteMany({ testId });
     const frResult = await FreeResult.deleteMany({ testId });
 
@@ -476,7 +516,7 @@ app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
 
     console.log(`Deleted test ${testId}:`, {
       questions: qResult.deletedCount,
-      freePcsQuestions: pResult.deletedCount,
+      freePcsQuestions: pDeletedCount,
       results: rResult.deletedCount,
       freeResults: frResult.deletedCount,
     });
@@ -486,7 +526,7 @@ app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
       message: "Test, questions, and all user results deleted successfully",
       deleted: {
         questions:        qResult.deletedCount,
-        freePcsQuestions: pResult.deletedCount,
+        freePcsQuestions: pDeletedCount,
         results:          rResult.deletedCount,
         freeResults:      frResult.deletedCount,
       },
