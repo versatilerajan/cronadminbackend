@@ -111,6 +111,7 @@ const questionSchema = new mongoose.Schema({
 
 const freePCSQuestionSchema = new mongoose.Schema({
   testId: { type: mongoose.Schema.Types.ObjectId, ref: "Test", required: true },
+  title: { type: String, required: true, trim: true, maxlength: 200 },
   examType: { type: String, required: true, trim: true },
   year: { type: Number, required: true },
   imageUrl: { type: String, trim: true, default: null },
@@ -361,6 +362,8 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Date must be in YYYY-MM-DD format" });
     }
 
+    const trimmedTitle = title.trim();
+
     const startTimeUTC = makeDateUTC(date, "00:00:00.000");
     const endTimeUTC   = makeDateUTC(date, "23:59:59.999");
 
@@ -369,7 +372,7 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
     }
 
     const test = await Test.create({
-      title: title.trim(),
+      title: trimmedTitle,
       date,
       startTime: startTimeUTC,
       endTime:   endTimeUTC,
@@ -380,6 +383,7 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
 
     const qDocs = questions.map((q) => ({
       testId: test._id,
+      title: trimmedTitle,
       examType: examType.trim(),
       year: yearNum,
       imageUrl: q.imageUrl ? String(q.imageUrl).trim() : null,
@@ -405,6 +409,7 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
       success: true,
       message: `Free PCS test created for ${examType.trim()} ${yearNum}`,
       testId: test._id.toString(),
+      title: trimmedTitle,
       date,
       examType: examType.trim(),
       year: yearNum,
@@ -446,6 +451,17 @@ app.get("/admin/tests", adminAuth, async (req, res) => {
     res.json({ success: true, tests: testsWithIST });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load tests" });
+  }
+});
+
+app.get("/admin/free-pcs-questions/:testId", adminAuth, async (req, res) => {
+  try {
+    await connectDB();
+    const { testId } = req.params;
+    const questions = await FreePCSQuestion.find({ testId }).sort({ createdAt: 1 }).lean();
+    res.json({ success: true, count: questions.length, questions });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to load free PCS questions" });
   }
 });
 
