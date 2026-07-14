@@ -11,7 +11,7 @@ const app = express();
 app.use(helmet());
 app.use(compression());
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 400 }));
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "2mb" }));
 
 app.use(cors({
   origin: true,
