@@ -88,6 +88,7 @@ const testSchema = new mongoose.Schema({
   totalQuestions: { type: Number, default: 0 },
   testType: { type: String, enum: ["paid", "free"], required: true },
   phase: { type: String, enum: ["daily", "gs", "csat", "free pcs", null], default: null },
+  collectionName: { type: String, default: null },
 }, { timestamps: true });
 
 const questionSchema = new mongoose.Schema({
