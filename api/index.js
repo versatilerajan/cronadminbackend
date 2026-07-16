@@ -15,7 +15,7 @@ app.use(express.json({ limit: "2mb" }));
 
 app.use(cors({
   origin: true,
-  methods: ["GET", "POST", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true,
   optionsSuccessStatus: 204,
@@ -496,6 +496,201 @@ app.get("/admin/free-pcs-questions/:testId", adminAuth, async (req, res) => {
     res.json({ success: true, count: questions.length, questions, collectionName: test.collectionName || null });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load free PCS questions" });
+  }
+});
+
+// Returns a test's questions in the SAME shape the create endpoints accept as input
+// (imageUrl, english, hindi, correct_answer) so the admin panel can load them into
+// the JSON editor, let the admin tweak them (e.g. add an imageUrl), and PUT them back
+// via /admin/update-questions/:testId. Works for both regular (Daily/GS/CSAT) tests
+// and Free PCS papers — the collectionName field tells us which store to read from.
+app.get("/admin/test-questions/:testId", adminAuth, async (req, res) => {
+  try {
+    await connectDB();
+    const { testId } = req.params;
+
+    const test = await Test.findById(testId).lean();
+    if (!test) {
+      return res.status(404).json({ success: false, message: "Test not found" });
+    }
+
+    const isFreePcs = !!test.collectionName;
+    const Model = isFreePcs ? getFreePCSModel(test.collectionName) : Question;
+    const docs = await Model.find({ testId }).sort({ createdAt: 1 }).lean();
+
+    const questions = docs.map((q) => ({
+      imageUrl: q.imageUrl || null,
+      english: {
+        question: q.english?.question || "",
+        options: q.english?.options || {},
+        english_explanation: q.english?.english_explanation || "",
+      },
+      hindi: {
+        question: q.hindi?.question || "",
+        options: q.hindi?.options || {},
+        hindi_explanation: q.hindi?.hindi_explanation || "",
+      },
+      correct_answer: q.correct_answer,
+    }));
+
+    res.json({
+      success: true,
+      testId: test._id.toString(),
+      title: test.title,
+      testType: test.testType,
+      phase: test.phase,
+      isFreePcs,
+      examType: isFreePcs ? (docs[0]?.examType || "") : undefined,
+      year: isFreePcs ? (docs[0]?.year ?? null) : undefined,
+      totalQuestions: questions.length,
+      questions,
+    });
+  } catch (err) {
+    console.error("Fetch test questions error:", err);
+    res.status(500).json({ success: false, message: "Failed to load questions" });
+  }
+});
+
+// Replaces a test's entire question set from an edited JSON array. Same validation
+// rules as creation. For regular tests the new count must still be 75/100/80 (the
+// phase is re-derived from it); for Free PCS papers any non-empty count is fine and
+// examType/year are preserved from the existing data unless overridden in the body.
+// This never touches startTime/endTime/date — editing content does not affect
+// availability, which stays governed solely by admin deletion.
+app.put("/admin/update-questions/:testId", adminAuth, async (req, res) => {
+  try {
+    await connectDB();
+    const { testId } = req.params;
+    let { questions, examType, year } = req.body;
+
+    if (!Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ success: false, message: "questions must be a non-empty array" });
+    }
+
+    const test = await Test.findById(testId);
+    if (!test) {
+      return res.status(404).json({ success: false, message: "Test not found" });
+    }
+
+    const payloadErrors = questions.flatMap((q, idx) => validateQuestionPayload(q, idx));
+    if (payloadErrors.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid questions payload",
+        errors: payloadErrors,
+      });
+    }
+
+    const isFreePcs = !!test.collectionName;
+
+    if (isFreePcs) {
+      const Model = getFreePCSModel(test.collectionName);
+      const existing = await Model.findOne({ testId }).lean();
+      const finalExamType = (examType && String(examType).trim()) || existing?.examType;
+      const finalYear = (year !== undefined && year !== null && !isNaN(Number(year)))
+        ? Number(year)
+        : existing?.year;
+
+      if (!finalExamType || !finalYear) {
+        return res.status(400).json({
+          success: false,
+          message: "examType and year are required (could not be inferred from existing data)",
+        });
+      }
+
+      await Model.deleteMany({ testId });
+
+      const qDocs = questions.map((q) => ({
+        testId: test._id,
+        title: test.title,
+        examType: finalExamType,
+        year: finalYear,
+        imageUrl: q.imageUrl ? String(q.imageUrl).trim() : null,
+        english: {
+          question: String(q.english.question).trim(),
+          options: q.english.options,
+          english_explanation: String(q.english.english_explanation || "").trim(),
+        },
+        hindi: {
+          question: String(q.hindi.question).trim(),
+          options: q.hindi.options,
+          hindi_explanation: String(q.hindi.hindi_explanation || "").trim(),
+        },
+        marks: 2,
+        negativeMarks: 0.66,
+        correct_answer: Number(q.correct_answer),
+        phase: "free pcs",
+      }));
+
+      await Model.insertMany(qDocs);
+
+      test.totalQuestions = qDocs.length;
+      await test.save();
+
+      return res.json({
+        success: true,
+        message: `Free PCS paper "${test.title}" updated — ${qDocs.length} questions saved`,
+        testId: test._id.toString(),
+        totalQuestions: qDocs.length,
+        examType: finalExamType,
+        year: finalYear,
+        availability: PERSISTENCE_NOTE,
+      });
+    }
+
+    // Regular Daily / GS / CSAT test
+    const numQuestions = questions.length;
+    let phase = null;
+    if      (numQuestions === 75)  phase = "daily";
+    else if (numQuestions === 100) phase = "gs";
+    else if (numQuestions === 80)  phase = "csat";
+    else {
+      return res.status(400).json({
+        success: false,
+        message: "Allowed question counts: 75 (daily), 100 (GS), 80 (CSAT) only",
+      });
+    }
+
+    const questionPhase = (phase === "csat") ? "CSAT" : "GS";
+
+    await Question.deleteMany({ testId });
+
+    const qDocs = questions.map((q) => ({
+      testId: test._id,
+      imageUrl: q.imageUrl ? String(q.imageUrl).trim() : null,
+      english: {
+        question: String(q.english.question).trim(),
+        options: q.english.options,
+        english_explanation: String(q.english.english_explanation || "").trim(),
+      },
+      hindi: {
+        question: String(q.hindi.question).trim(),
+        options: q.hindi.options,
+        hindi_explanation: String(q.hindi.hindi_explanation || "").trim(),
+      },
+      marks: 2,
+      negativeMarks: 0.66,
+      correct_answer: Number(q.correct_answer),
+      phase: questionPhase,
+    }));
+
+    await Question.insertMany(qDocs);
+
+    test.phase = phase;
+    test.totalQuestions = numQuestions;
+    await test.save();
+
+    res.json({
+      success: true,
+      message: `Test "${test.title}" updated — ${numQuestions} questions saved`,
+      testId: test._id.toString(),
+      totalQuestions: numQuestions,
+      phase,
+      availability: PERSISTENCE_NOTE,
+    });
+  } catch (err) {
+    console.error("Update questions error:", err);
+    res.status(500).json({ success: false, message: err.message || "Update failed" });
   }
 });
 
