@@ -141,6 +141,13 @@ const Question = questionConn.models.Question || questionConn.model("Question", 
 
 const FreePCSQuestion = freePcsConn.models.FreePCSQuestion || freePcsConn.model("FreePCSQuestion", freePCSQuestionSchema);
 
+// Every test created through this admin backend (paid or free, daily/GS/CSAT/free-pcs)
+// is persistent by design: startTime/endTime are only used by the client to gate
+// "not started yet" / show a schedule — they are NOT used to auto-archive or hide a
+// test paper. A test paper stays visible and attemptable until an admin explicitly
+// calls DELETE /admin/delete-test/:testId.
+const PERSISTENCE_NOTE = "No expiry — this test stays available to users until an admin deletes it";
+
 function slugify(title) {
   return title
     .toString()
@@ -275,6 +282,9 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Date must be in YYYY-MM-DD format" });
     }
 
+    // startTime/endTime are informational scheduling metadata only (e.g. used by the
+    // client to show "not started yet" before startTime). Reaching endTime does NOT
+    // remove or archive the test — it remains available until an admin deletes it.
     const startTimeUTC = makeDateUTC(date, "00:00:00.000");
     const endTimeUTC   = makeDateUTC(date, "23:59:59.999");
 
@@ -289,6 +299,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       endUTC:   endTimeUTC.toISOString(),
       startIST: `${date}T00:00:00+05:30`,
       endIST:   `${date}T23:59:59+05:30`,
+      note: "endTime is informational only; the paper does not expire or get archived after it",
     });
 
     const test = await Test.create({
@@ -339,6 +350,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       phase,
       startTimeIST: `${date}T00:00:00+05:30`,
       endTimeIST:   `${date}T23:59:59+05:30`,
+      availability: PERSISTENCE_NOTE,
     });
   } catch (err) {
     console.error("Create test error:", err);
@@ -430,7 +442,7 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
       totalQuestions: questions.length,
       testType: "free",
       phase: "free pcs",
-      availability: "No expiry — this test stays available until an admin deletes it",
+      availability: PERSISTENCE_NOTE,
     });
   } catch (err) {
     console.error("Create free PCS test error:", err);
@@ -458,6 +470,7 @@ app.get("/admin/tests", adminAuth, async (req, res) => {
           t.phase === "gs"       ? "GS Paper (100q)" :
           t.phase === "csat"     ? "CSAT Paper (80q)" :
           t.phase === "free pcs" ? "Free PCS" : "Unknown",
+        availability: PERSISTENCE_NOTE,
       };
     });
 
