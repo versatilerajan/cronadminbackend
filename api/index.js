@@ -37,19 +37,39 @@ const freePcsConn = mongoose.createConnection(process.env.FREEPCS_URI, {
 });
 
 userConn.on("connected", () => console.log("userDB (MONGO_URI) connected"));
-userConn.on("error", (err) => console.error("userDB connection error:", err));
+userConn.on("error", (err) => console.error("userDB connection error:", err.message));
 
 questionConn.on("connected", () => console.log("questionsDB (QUESTIONDB_URI) connected"));
-questionConn.on("error", (err) => console.error("questionsDB connection error:", err));
+questionConn.on("error", (err) => console.error("questionsDB connection error:", err.message));
 
 freePcsConn.on("connected", () => console.log("freePcsDB (FREEPCS_URI) connected"));
-freePcsConn.on("error", (err) => console.error("freePcsDB connection error:", err));
+freePcsConn.on("error", (err) => console.error("freePcsDB connection error:", err.message));
 
+async function connectUserDB() {
+  await userConn.asPromise();
+}
+async function connectQuestionDB() {
+  await questionConn.asPromise();
+}
+async function connectFreePcsDB() {
+  await freePcsConn.asPromise();
+}
 async function connectDB() {
-  await Promise.all([userConn.asPromise(), questionConn.asPromise(), freePcsConn.asPromise()]);
+  return Promise.allSettled([
+    userConn.asPromise(),
+    questionConn.asPromise(),
+    freePcsConn.asPromise(),
+  ]);
 }
 
-connectDB().catch(err => console.error("Initial DB connect failed:", err));
+userConn.asPromise().catch(err => console.error("Initial userDB connect failed:", err.message));
+questionConn.asPromise().catch(err => console.error("Initial questionDB connect failed:", err.message));
+freePcsConn.asPromise().catch(err => console.error("Initial freePcsDB connect failed:", err.message));
+
+if (!process.env.MONGO_URI) console.error("MONGO_URI env var is missing");
+if (!process.env.QUESTIONDB_URI) console.error("QUESTIONDB_URI env var is missing");
+if (!process.env.FREEPCS_URI) console.error("FREEPCS_URI env var is missing");
+if (!process.env.JWT_SECRET) console.error("JWT_SECRET env var is missing");
 
 const adminSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -141,11 +161,6 @@ const Question = questionConn.models.Question || questionConn.model("Question", 
 
 const FreePCSQuestion = freePcsConn.models.FreePCSQuestion || freePcsConn.model("FreePCSQuestion", freePCSQuestionSchema);
 
-// Every test created through this admin backend (paid or free, daily/GS/CSAT/free-pcs)
-// is persistent by design: startTime/endTime are only used by the client to gate
-// "not started yet" / show a schedule — they are NOT used to auto-archive or hide a
-// test paper. A test paper stays visible and attemptable until an admin explicitly
-// calls DELETE /admin/delete-test/:testId.
 const PERSISTENCE_NOTE = "No expiry — this test stays available to users until an admin deletes it";
 
 function slugify(title) {
@@ -208,22 +223,23 @@ function validateQuestionPayload(q, idx) {
 }
 
 app.get("/", async (req, res) => {
-  try {
-    await connectDB();
-    const nowIST = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
-    res.json({
-      success: true,
-      message: "Admin Backend Running",
-      currentISTTime: nowIST.toISOString().replace("Z", "+05:30"),
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
+  const results = await connectDB();
+  const [userR, questionR, freePcsR] = results;
+  res.json({
+    success: true,
+    message: "Admin Backend Running",
+    currentISTTime: new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().replace("Z", "+05:30"),
+    db: {
+      userDB: userR.status,
+      questionDB: questionR.status,
+      freePcsDB: freePcsR.status,
+    },
+  });
 });
 
 app.post("/admin/login", async (req, res) => {
   try {
-    await connectDB();
+    await connectUserDB();
     const { email, password } = req.body;
     if (!email || !password)
       return res.status(400).json({ success: false, message: "Email & password required" });
@@ -232,19 +248,25 @@ app.post("/admin/login", async (req, res) => {
     if (!admin)
       return res.status(401).json({ success: false, message: "Admin not found" });
 
-    if (!await bcrypt.compare(password, admin.password))
+    if (!admin.password || !await bcrypt.compare(password, admin.password))
       return res.status(401).json({ success: false, message: "Wrong password" });
+
+    if (!process.env.JWT_SECRET) {
+      console.error("Admin login error: JWT_SECRET env var is missing");
+      return res.status(500).json({ success: false, message: "Server misconfigured" });
+    }
 
     const token = jwt.sign({ id: admin._id }, process.env.JWT_SECRET, { expiresIn: "24h" });
     res.json({ success: true, token });
   } catch (err) {
+    console.error("Admin login error:", err.message, err.stack);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
 app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
   try {
-    await connectDB();
+    await connectQuestionDB();
 
     let { title, date, questions, testType } = req.body;
 
@@ -282,25 +304,12 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: "Date must be in YYYY-MM-DD format" });
     }
 
-    // startTime/endTime are informational scheduling metadata only (e.g. used by the
-    // client to show "not started yet" before startTime). Reaching endTime does NOT
-    // remove or archive the test — it remains available until an admin deletes it.
     const startTimeUTC = makeDateUTC(date, "00:00:00.000");
     const endTimeUTC   = makeDateUTC(date, "23:59:59.999");
 
     if (isNaN(startTimeUTC.getTime()) || isNaN(endTimeUTC.getTime())) {
       return res.status(400).json({ success: false, message: "Invalid date — could not compute timestamps" });
     }
-
-    console.log("Creating test window:", {
-      date,
-      phase,
-      startUTC: startTimeUTC.toISOString(),
-      endUTC:   endTimeUTC.toISOString(),
-      startIST: `${date}T00:00:00+05:30`,
-      endIST:   `${date}T23:59:59+05:30`,
-      note: "endTime is informational only; the paper does not expire or get archived after it",
-    });
 
     const test = await Test.create({
       title: title.trim(),
@@ -360,7 +369,7 @@ app.post("/admin/create-test-with-questions", adminAuth, async (req, res) => {
 
 app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
   try {
-    await connectDB();
+    await Promise.all([connectQuestionDB(), connectFreePcsDB()]);
 
     let { title, date, examType, year, questions } = req.body;
 
@@ -452,7 +461,7 @@ app.post("/admin/create-free-pcs-test", adminAuth, async (req, res) => {
 
 app.get("/admin/tests", adminAuth, async (req, res) => {
   try {
-    await connectDB();
+    await connectQuestionDB();
     const tests = await Test.find().sort({ date: -1, phase: 1 }).lean();
 
     const testsWithIST = tests.map(t => {
@@ -476,13 +485,14 @@ app.get("/admin/tests", adminAuth, async (req, res) => {
 
     res.json({ success: true, tests: testsWithIST });
   } catch (err) {
+    console.error("Load tests error:", err);
     res.status(500).json({ success: false, message: "Failed to load tests" });
   }
 });
 
 app.get("/admin/free-pcs-questions/:testId", adminAuth, async (req, res) => {
   try {
-    await connectDB();
+    await Promise.all([connectQuestionDB(), connectFreePcsDB()]);
     const { testId } = req.params;
 
     const test = await Test.findById(testId).lean();
@@ -495,18 +505,14 @@ app.get("/admin/free-pcs-questions/:testId", adminAuth, async (req, res) => {
     const questions = await Model.find({ testId }).sort({ createdAt: 1 }).lean();
     res.json({ success: true, count: questions.length, questions, collectionName: test.collectionName || null });
   } catch (err) {
+    console.error("Load free PCS questions error:", err);
     res.status(500).json({ success: false, message: "Failed to load free PCS questions" });
   }
 });
 
-// Returns a test's questions in the SAME shape the create endpoints accept as input
-// (imageUrl, english, hindi, correct_answer) so the admin panel can load them into
-// the JSON editor, let the admin tweak them (e.g. add an imageUrl), and PUT them back
-// via /admin/update-questions/:testId. Works for both regular (Daily/GS/CSAT) tests
-// and Free PCS papers — the collectionName field tells us which store to read from.
 app.get("/admin/test-questions/:testId", adminAuth, async (req, res) => {
   try {
-    await connectDB();
+    await Promise.all([connectQuestionDB(), connectFreePcsDB()]);
     const { testId } = req.params;
 
     const test = await Test.findById(testId).lean();
@@ -551,15 +557,9 @@ app.get("/admin/test-questions/:testId", adminAuth, async (req, res) => {
   }
 });
 
-// Replaces a test's entire question set from an edited JSON array. Same validation
-// rules as creation. For regular tests the new count must still be 75/100/80 (the
-// phase is re-derived from it); for Free PCS papers any non-empty count is fine and
-// examType/year are preserved from the existing data unless overridden in the body.
-// This never touches startTime/endTime/date — editing content does not affect
-// availability, which stays governed solely by admin deletion.
 app.put("/admin/update-questions/:testId", adminAuth, async (req, res) => {
   try {
-    await connectDB();
+    await Promise.all([connectQuestionDB(), connectFreePcsDB()]);
     const { testId } = req.params;
     let { questions, examType, year } = req.body;
 
@@ -638,7 +638,6 @@ app.put("/admin/update-questions/:testId", adminAuth, async (req, res) => {
       });
     }
 
-    // Regular Daily / GS / CSAT test
     const numQuestions = questions.length;
     let phase = null;
     if      (numQuestions === 75)  phase = "daily";
@@ -696,7 +695,7 @@ app.put("/admin/update-questions/:testId", adminAuth, async (req, res) => {
 
 app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
   try {
-    await connectDB();
+    await Promise.all([connectUserDB(), connectQuestionDB(), connectFreePcsDB()]);
 
     const testId = req.params.testId;
 
@@ -721,13 +720,6 @@ app.delete("/admin/delete-test/:testId", adminAuth, async (req, res) => {
     const frResult = await FreeResult.deleteMany({ testId });
 
     await Test.findByIdAndDelete(testId);
-
-    console.log(`Deleted test ${testId}:`, {
-      questions: qResult.deletedCount,
-      freePcsQuestions: pDeletedCount,
-      results: rResult.deletedCount,
-      freeResults: frResult.deletedCount,
-    });
 
     res.json({
       success: true,
